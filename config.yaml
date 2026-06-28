@@ -60,14 +60,17 @@ paths:
   results_subdir: results           # data/results/  (csv + boxplots)
 
 # ---- LEXICAL RETRIEVER: BM25 -----------------------------------------------
-# BM25 is the lexical representative. For now we use the well-established BEIR /
-# Anserini default parameters (k1=0.9, b=0.4), which are the known-best general
-# setting across BEIR, plus Snowball (english) stemming. A dedicated per-corpus
-# k1/b tuning script will be added once the final dataset is chosen.
+# BM25 is the lexical representative. There is NO universal best k1/b -- it is
+# corpus-dependent. We fix the classic Lucene/Elasticsearch defaults k1=1.2,
+# b=0.75 as a uniform, well-justified setting for the (variable-length) BEIR
+# corpora -- b=0.75 = full length normalisation, appropriate for heterogeneous
+# doc lengths (cf. Anserini's k1=0.9, b=0.4, which were tuned for short, uniform
+# MS MARCO passages). A per-corpus k1/b grid-search will be added once the final
+# dataset is chosen. Snowball (english) stemming is applied.
 bm25:
   method: lucene        # bm25s scoring variant: lucene | robertson | atire | bm25l | bm25+
-  k1: 0.9               # term-frequency saturation  (BEIR/Anserini default)
-  b: 0.4                # length normalisation        (BEIR/Anserini default)
+  k1: 1.2               # term-frequency saturation   (Lucene/Elasticsearch default)
+  b: 0.75               # length normalisation         (Lucene/Elasticsearch default)
   use_stemming: true    # Snowball (english) stemming via PyStemmer
 
 # ---- SEMANTIC RETRIEVER: dense embeddings ----------------------------------
