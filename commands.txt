@@ -3,7 +3,7 @@
 # ============================================================================
 
 # 1) Clone the repository
-git clone https://github.com/<your-account>/Query-Adaptive-Weighted-Borda-Count.git
+git clone https://github.com/EgwDean/Query-Adaptive-Weighted-Borda-Count.git
 cd Query-Adaptive-Weighted-Borda-Count
 
 # 2) Create and activate a virtual environment
@@ -34,6 +34,6 @@ python src/alpha_distribution.py  # BM25 + dense + oracle alpha + boxplots
 
 # Tip (long jobs): the rtx4090 box has no scheduler and is shared, so run long
 # embedding/indexing jobs inside tmux so they survive an SSH disconnect:
-#   tmux new -s wbc        # start session;  re-attach later with: tmux attach -t wbc
+#   tmux new -s session        # start session;  re-attach later with: tmux attach -t wbc
 #   source .venv/bin/activate && python src/embed.py
 #   (detach with Ctrl-b then d)
