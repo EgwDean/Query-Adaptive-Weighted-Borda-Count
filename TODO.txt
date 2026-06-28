@@ -1,0 +1,2 @@
+Add the hardware/software in the documentation
+Add the BM25 optimization script

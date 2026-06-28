@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project data: downloaded BEIR datasets and cached embeddings are large and
+# regenerated on the HPC. Keep the folder structure, ignore the contents.
+# (data/results/ stays tracked -- the boxplots + CSVs are the deliverable.)
+data/datasets/*
+data/processed_data/*
+!data/datasets/.gitkeep
+!data/processed_data/.gitkeep
