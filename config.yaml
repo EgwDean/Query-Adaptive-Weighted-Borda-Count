@@ -1,0 +1,100 @@
+# ============================================================================
+# Query-Adaptive Weighted Borda Count  --  configuration
+# ----------------------------------------------------------------------------
+# Phase 1 goal: find the BEIR dataset that best balances LEXICAL and SEMANTIC
+# retrieval (highest per-query oracle-alpha spread, or alpha centred on 0.5),
+# so it is the strongest test bed for the adaptive Weighted Borda Count system.
+#
+# Workflow (run ONCE per dataset, manually, on the HPC):
+#   1. set `dataset:` below to one name from the catalogue
+#   2. python src/download.py          # download that BEIR dataset
+#   3. python src/embed.py             # embed its docs + queries (all-mpnet)
+#   4. python src/alpha_distribution.py# BM25 + dense, oracle alpha, boxplots
+# Repeat for each dataset you want to compare.
+# ============================================================================
+
+# ---- ACTIVE DATASET --------------------------------------------------------
+# Change this line for each run, then re-run the three scripts.
+dataset: scifact
+
+# ---- BEIR DATASET CATALOGUE ------------------------------------------------
+# Uncomment the one you want into `dataset:` above. Stats are approximate
+# (corpus size / #queries on the eval split / UNZIPPED on-disk size). The disk
+# sizes are estimates from corpus_count x avg doc length (BEIR is not published
+# with official disk sizes); plan for some headroom. "split" notes the split
+# that has qrels; set `split:` below to match.
+#
+#   name                corpus docs   queries   ~disk(unzip)  split   notes
+#   ------------------  -----------   -------   -----------   -----   -----------------------------
+#   scifact                  5,183        300       ~8 MB     test    small, scientific claims
+#   nfcorpus                 3,633        323       ~8 MB     test    small, medical, graded rels
+#   arguana                  8,674      1,406      ~10 MB     test    argument counter-retrieval
+#   scidocs                 25,657      1,000      ~30 MB     test    citation prediction
+#   fiqa                    57,638        648      ~50 MB     test    financial QA, semantic-leaning
+#   trec-covid             171,332         50     ~180 MB     test    biomedical, LEXICAL-leaning, graded
+#   webis-touche2020       382,545         49     ~700 MB     test    arguments, BM25 famously strong
+#   quora                  522,931     10,000      ~60 MB     test    duplicate-question, paraphrase
+#   dbpedia-entity       4,635,922        400      ~1.7 GB    test    entity retrieval, mixed
+#   nq                   2,681,468      3,452      ~1.5 GB    test    Natural Questions (large)
+#   hotpotqa             5,233,329      7,405      ~1.8 GB    test    multi-hop QA (large)
+#   fever                5,416,568      6,666      ~3.1 GB    test    fact verification (large)
+#   climate-fever        5,416,593      1,535      ~3.1 GB    test    climate claims (large)
+#   msmarco              8,841,823      6,980      ~3.5 GB    dev     passage ranking (HUGE, use dev)
+#
+# Feasibility note: BM25 (bm25s, in-RAM sparse) + dense brute-force similarity
+# are comfortable up to a few hundred-k docs on a single node. The million-doc
+# sets (nq/hotpotqa/fever/climate-fever/dbpedia/msmarco) need large RAM/VRAM and
+# are best left until after a balanced mid-size dataset is chosen. Start small:
+#   scifact, nfcorpus, fiqa, scidocs, arguana  (sanity + speed)
+#   trec-covid, webis-touche2020               (lexical-leaning, key for balance)
+
+# Eval split that carries qrels for the active dataset (test for all BEIR
+# datasets except msmarco, which uses dev).
+split: test
+
+# ---- PATHS (relative to repo root) -----------------------------------------
+paths:
+  data_dir: data
+  datasets_subdir: datasets         # data/datasets/<dataset>/   (raw BEIR)
+  processed_subdir: processed_data  # data/processed_data/<dataset>/ (embeddings)
+  results_subdir: results           # data/results/  (csv + boxplots)
+
+# ---- LEXICAL RETRIEVER: BM25 -----------------------------------------------
+# BM25 is the lexical representative. For now we use the well-established BEIR /
+# Anserini default parameters (k1=0.9, b=0.4), which are the known-best general
+# setting across BEIR, plus Snowball (english) stemming. A dedicated per-corpus
+# k1/b tuning script will be added once the final dataset is chosen.
+bm25:
+  method: lucene        # bm25s scoring variant: lucene | robertson | atire | bm25l | bm25+
+  k1: 0.9               # term-frequency saturation  (BEIR/Anserini default)
+  b: 0.4                # length normalisation        (BEIR/Anserini default)
+  use_stemming: true    # Snowball (english) stemming via PyStemmer
+
+# ---- SEMANTIC RETRIEVER: dense embeddings ----------------------------------
+# all-mpnet-base-v2 chosen deliberately for STRENGTH PARITY with tuned BM25
+# (so the oracle alpha is not collapsed to a corner). 768-dim, cosine, no
+# query/passage prefixes required.
+dense:
+  model_name: sentence-transformers/all-mpnet-base-v2
+  batch_size: 256       # encoding batch size (lower if OOM)
+  max_seq_length: 384   # truncation length for documents
+  normalize: true       # L2-normalise -> dot product == cosine
+  device: cuda          # "cuda" or "cpu"; falls back to cpu automatically
+
+# ---- RETRIEVAL DEPTH -------------------------------------------------------
+retrieval:
+  top_k: 100            # top-N docs returned by each retriever (the two ranks)
+
+# ---- WEIGHTED BORDA COUNT --------------------------------------------------
+# score(d) = alpha*(N - rank_sparse(d)) + (1-alpha)*(N - rank_dense(d))
+# alpha = 1 -> pure BM25 (lexical) ; alpha = 0 -> pure dense (semantic).
+# Oracle alpha = the alpha maximising NDCG@top_k for that query (lowest alpha
+# wins ties). N is the Borda list length (= retrieval depth).
+borda:
+  N: 100                # Borda list length (keep equal to retrieval.top_k)
+  alpha_min: 0.0
+  alpha_max: 1.0
+  alpha_step: 0.01      # 101-point grid search per query
+
+# ---- MISC ------------------------------------------------------------------
+seed: 42
