@@ -17,6 +17,7 @@ strongest lexical+semantic test bed for the adaptive system.
 
 import os
 import sys
+import gc
 import json
 import glob
 
@@ -74,10 +75,12 @@ def ndcg_at_k(ranked_ids, rels, k):
 # --------------------------------------------------------------------------- #
 # Retrieval
 # --------------------------------------------------------------------------- #
-def bm25_retrieve(corpus, doc_ids, queries, qids, conf, top_k):
-    """Return {qid: [doc_id, ...]} top-k BM25 lists (rank 0 = best)."""
-    texts = [build_doc_text(corpus[d]) for d in doc_ids]
+def bm25_retrieve(doc_texts, doc_ids, queries, qids, conf, top_k):
+    """Return {qid: [doc_id, ...]} top-k BM25 lists (rank 0 = best).
 
+    Takes pre-built `doc_texts` (parallel to `doc_ids`) so the caller can free
+    the big corpus dict before indexing a multi-million-doc collection.
+    """
     stemmer = None
     if conf.get("use_stemming", False):
         if Stemmer is not None:
@@ -85,11 +88,13 @@ def bm25_retrieve(corpus, doc_ids, queries, qids, conf, top_k):
         else:
             print("[alpha] PyStemmer not installed -- BM25 stemming disabled.")
 
-    print(f"[alpha] BM25: tokenising {len(texts):,} docs / building index "
+    print(f"[alpha] BM25: tokenising {len(doc_texts):,} docs / building index "
           f"(k1={conf['k1']}, b={conf['b']}, method={conf.get('method', 'lucene')})")
-    corpus_tokens = bm25s.tokenize(texts, stopwords="en", stemmer=stemmer, show_progress=True)
+    corpus_tokens = bm25s.tokenize(doc_texts, stopwords="en", stemmer=stemmer, show_progress=True)
     retriever = bm25s.BM25(method=conf.get("method", "lucene"), k1=conf["k1"], b=conf["b"])
     retriever.index(corpus_tokens, show_progress=True)
+    del corpus_tokens
+    gc.collect()
 
     q_texts = [queries[q] for q in qids]
     q_tokens = bm25s.tokenize(q_texts, stopwords="en", stemmer=stemmer, show_progress=False)
@@ -102,10 +107,15 @@ def bm25_retrieve(corpus, doc_ids, queries, qids, conf, top_k):
     return out
 
 
-def dense_retrieve(name, paths, qids, top_k, device):
-    """Return {qid: [doc_id, ...]} top-k dense (cosine) lists from cached embeddings."""
+def dense_retrieve(name, paths, qids, top_k, d_conf):
+    """Return {qid: [doc_id, ...]} top-k dense (cosine) lists.
+
+    Scales to arbitrarily large corpora: the corpus embedding matrix is read
+    from disk as a MEMMAP and scored in CHUNKS on the GPU while maintaining a
+    running top-k, so neither host RAM nor VRAM grows with the corpus size.
+    """
     pdir = processed_dir(paths, name, create=False)
-    corpus_emb = np.load(os.path.join(pdir, "corpus_emb.npy"))
+    corpus_emb = np.load(os.path.join(pdir, "corpus_emb.npy"), mmap_mode="r")  # on disk
     with open(os.path.join(pdir, "corpus_ids.json"), encoding="utf-8") as f:
         c_ids = json.load(f)
     q_emb_all = np.load(os.path.join(pdir, "query_emb.npy"))
@@ -113,25 +123,41 @@ def dense_retrieve(name, paths, qids, top_k, device):
         q_ids_all = json.load(f)
     q_pos = {q: i for i, q in enumerate(q_ids_all)}
 
+    requested = d_conf.get("device", "cuda")
     dev = "cpu"
-    if device != "cpu" and torch.cuda.is_available():
+    if requested != "cpu" and torch.cuda.is_available():
         dev = "cuda"
-    elif device != "cpu":
+    elif requested != "cpu":
         print("[alpha] CUDA not available -- dense retrieval on CPU.")
+    # fp16 matmul is unsupported/slow on CPU -> compute in fp32 there.
+    dtype = torch.float16 if dev == "cuda" else torch.float32
 
-    C = torch.from_numpy(corpus_emb).to(dev)                  # (Ndoc, dim), normalised
-    Q = torch.from_numpy(q_emb_all[[q_pos[q] for q in qids]]).to(dev)
-    k = min(top_k, len(c_ids))
+    n_doc, dim = corpus_emb.shape
+    k = min(top_k, n_doc)
+    chunk = int(d_conf.get("retrieval_chunk_size", 50000))
 
-    out = {}
-    bs = 256
-    for start in tqdm(range(0, len(qids), bs), desc="[alpha] dense retrieve"):
-        qb = Q[start:start + bs]
-        sims = qb @ C.T                                       # cosine (embeddings normalised)
-        _, topi = torch.topk(sims, k=k, dim=1)
-        topi = topi.cpu().numpy()
-        for r, qi in enumerate(range(start, min(start + bs, len(qids)))):
-            out[qids[qi]] = [c_ids[int(j)] for j in topi[r]]
+    q_sel = np.ascontiguousarray(q_emb_all[[q_pos[q] for q in qids]])
+    Q = torch.from_numpy(q_sel).to(dev).to(dtype)             # (Nq, dim), small
+
+    run_vals, run_idx = None, None                            # running top-k across chunks
+    for start in tqdm(range(0, n_doc, chunk), desc="[alpha] dense retrieve (chunked)"):
+        end = min(start + chunk, n_doc)
+        block = torch.from_numpy(np.ascontiguousarray(corpus_emb[start:end])).to(dev).to(dtype)
+        sims = Q @ block.T                                    # (Nq, end-start)
+        kk = min(k, end - start)
+        vals, idx = torch.topk(sims, kk, dim=1)
+        idx = idx + start                                     # local -> global doc index
+        if run_vals is None:
+            run_vals, run_idx = vals, idx
+        else:
+            run_vals = torch.cat([run_vals, vals], dim=1)
+            run_idx = torch.cat([run_idx, idx], dim=1)
+            vals, sel = torch.topk(run_vals, min(k, run_vals.shape[1]), dim=1)
+            run_vals, run_idx = vals, torch.gather(run_idx, 1, sel)
+        del block, sims
+
+    top = run_idx.cpu().numpy()
+    out = {q: [c_ids[int(j)] for j in top[r]] for r, q in enumerate(qids)}
     return out
 
 
@@ -257,8 +283,17 @@ def main():
     print(f"[alpha] '{name}': {len(doc_ids):,} docs | {len(qids):,} queries with qrels "
           f"| alpha grid={len(alphas)} pts | top_k={k}")
 
-    bm = bm25_retrieve(corpus, doc_ids, queries, qids, config["bm25"], k)
-    dn = dense_retrieve(name, paths, qids, k, config["dense"].get("device", "cuda"))
+    # Extract doc texts, then FREE the corpus dict (can be ~10s of GB on MS MARCO)
+    # before BM25 indexing. Dense retrieval reads embeddings from disk, not corpus.
+    doc_texts = [build_doc_text(corpus[d]) for d in doc_ids]
+    del corpus
+    gc.collect()
+
+    bm = bm25_retrieve(doc_texts, doc_ids, queries, qids, config["bm25"], k)
+    del doc_texts
+    gc.collect()
+
+    dn = dense_retrieve(name, paths, qids, k, config["dense"])
 
     rows = []
     for q in tqdm(qids, desc="[alpha] fuse + score"):

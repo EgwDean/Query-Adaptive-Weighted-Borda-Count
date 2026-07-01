@@ -11,6 +11,7 @@ Change `dataset:` in config.yaml, then:  python src/pipeline.py
 
 import os
 import sys
+import gc
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -28,6 +29,17 @@ STAGES = [
 ]
 
 
+def _release_memory():
+    """Free host + GPU memory between stages (embed model/VRAM before retrieval)."""
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+
+
 def main():
     name = load_config().get("dataset", "?")
     print(f"\n########## PIPELINE START: dataset='{name}' ##########")
@@ -37,6 +49,7 @@ def main():
         print(f"\n---------- [{i}/{len(STAGES)}] {label} ----------")
         t0 = time.perf_counter()
         fn()
+        _release_memory()
         print(f"---------- {label} done in {time.perf_counter() - t0:.1f}s ----------")
 
     print(f"\n########## PIPELINE DONE: dataset='{name}' "

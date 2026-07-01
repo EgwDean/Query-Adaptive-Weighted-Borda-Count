@@ -15,7 +15,7 @@
 
 # ---- ACTIVE DATASET --------------------------------------------------------
 # Change this line for each run, then re-run the three scripts.
-dataset: scifact
+dataset: msmarco
 
 # ---- BEIR DATASET CATALOGUE ------------------------------------------------
 # Uncomment the one you want into `dataset:` above. Stats are approximate
@@ -77,12 +77,22 @@ bm25:
 # all-mpnet-base-v2 chosen deliberately for STRENGTH PARITY with tuned BM25
 # (so the oracle alpha is not collapsed to a corner). 768-dim, cosine, no
 # query/passage prefixes required.
+#
+# Memory scaling (so datasets up to MS MARCO's 8.8M docs fit on this box):
+#   - embeddings are written to a .npy MEMMAP shard-by-shard, so the full
+#     matrix is never held in RAM while encoding;
+#   - float16 storage halves RAM/disk (8.8M x 768: 27 GB fp32 -> 13.5 GB fp16);
+#   - dense retrieval scans the corpus in CHUNKS on the GPU, so VRAM stays flat
+#     regardless of corpus size.
 dense:
   model_name: sentence-transformers/all-mpnet-base-v2
-  batch_size: 256       # encoding batch size (lower if OOM)
-  max_seq_length: 384   # truncation length for documents
-  normalize: true       # L2-normalise -> dot product == cosine
-  device: cuda          # "cuda" or "cpu"; falls back to cpu automatically
+  batch_size: 256          # encoding batch size (lower if GPU OOM)
+  max_seq_length: 384      # truncation length for documents
+  normalize: true          # L2-normalise -> dot product == cosine
+  device: cuda             # "cuda" or "cpu"; falls back to cpu automatically
+  embedding_dtype: float16 # cached embedding storage: float16 (half RAM/disk) or float32
+  encode_shard_size: 100000  # docs encoded per shard, streamed to the memmap (caps host RAM)
+  retrieval_chunk_size: 50000 # corpus rows scored per GPU block in dense retrieval (caps VRAM)
 
 # ---- RETRIEVAL DEPTH -------------------------------------------------------
 retrieval:
