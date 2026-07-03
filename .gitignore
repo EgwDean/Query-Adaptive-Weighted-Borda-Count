@@ -224,3 +224,5 @@ data/datasets/*
 data/processed_data/*
 !data/datasets/.gitkeep
 !data/processed_data/.gitkeep
+commands.txt
+TODO.txt

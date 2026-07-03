@@ -37,3 +37,5 @@ python src/alpha_distribution.py  # BM25 + dense + oracle alpha + boxplots
 #   tmux new -s session        # start session;  re-attach later with: tmux attach -t wbc
 #   source .venv/bin/activate && python src/embed.py
 #   (detach with Ctrl-b then d)
+
+scp -r up1093320@150.140.140.42:~/Query-Adaptive-Weighted-Borda-Count/data/results C:/Users/USER/Desktop
