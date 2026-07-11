@@ -61,12 +61,17 @@ carry forward.
 ├── config.yaml              # all settings + BEIR dataset catalogue
 ├── requirements.txt         # pinned dependencies
 ├── commands.txt             # Linux/HPC setup + run commands
+├── clean.sh                 # delete datasets/embeddings, keep results
 ├── README.md
+├── docs/
+│   ├── ltr_router_features.md  # Phase-2 router feature catalogue (QPP + routing)
+│   └── comparison_methods.md   # baselines & methods to compare against
 ├── src/
 │   ├── utils.py             # config + path helpers
 │   ├── download.py          # download one BEIR dataset (tqdm)
 │   ├── embed.py             # embed docs + queries (all-mpnet-base-v2, tqdm)
-│   └── alpha_distribution.py# BM25 + dense + oracle alpha + boxplots
+│   ├── alpha_distribution.py# BM25 + dense + oracle alpha + boxplots
+│   └── pipeline.py          # run download -> embed -> alpha_distribution
 └── data/
     ├── datasets/<name>/        # raw BEIR corpus, queries, qrels
     ├── processed_data/<name>/  # cached embeddings + id maps
@@ -141,9 +146,25 @@ spread** and which has the **median closest to 0.5**.
 
 ---
 
+## Documentation
+
+* [docs/ltr_router_features.md](docs/ltr_router_features.md) — Phase-2 router
+  feature catalogue: query performance predictors (pre-/post-retrieval, dense)
+  plus hybrid routing signals, each with a plain-math description and a
+  **"Lex/sem routing?"** column marking whether the source used it directly to
+  choose between lexical and dense retrieval (**Yes**) or is a general QPP signal
+  repurposed here as a per-retriever router input (**No**).
+* [docs/comparison_methods.md](docs/comparison_methods.md) — the baselines and
+  retrieval paradigms to evaluate against (single retrievers, static fusion,
+  adaptive fusion, SPLADE, reranker, oracle ceiling).
+
+---
+
 ## Roadmap
 
 * **Phase 1 (this repo):** choose the most lexical+semantic-balanced dataset.
-* **Phase 2:** learning-to-rank features + a router that predicts `alpha` per
-  query; compare Weighted Borda Count against a **globally-tuned static** weight
-  and against the best single retriever.
+* **Phase 2:** learning-to-rank features
+  ([docs/ltr_router_features.md](docs/ltr_router_features.md)) + a router that
+  predicts `alpha` per query; compare Weighted Borda Count against a
+  **globally-tuned static** weight and against the best single retriever
+  ([docs/comparison_methods.md](docs/comparison_methods.md)).
