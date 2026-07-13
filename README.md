@@ -71,11 +71,14 @@ carry forward.
 │   ├── download.py          # download one BEIR dataset (tqdm)
 │   ├── embed.py             # embed docs + queries (all-mpnet-base-v2, tqdm)
 │   ├── alpha_distribution.py# BM25 + dense + oracle alpha + boxplots
-│   └── pipeline.py          # run download -> embed -> alpha_distribution
+│   ├── tune_bm25.py         # grid-search BM25 k1/b/stemming by NDCG@100
+│   └── dataset_pipeline.py  # run download -> embed -> alpha_distribution
 └── data/
     ├── datasets/<name>/        # raw BEIR corpus, queries, qrels
     ├── processed_data/<name>/  # cached embeddings + id maps
-    └── results/                # *_alpha.csv, boxplots, alpha_summary.csv
+    └── results/                # per-phase experiment outputs
+        ├── alpha_distribution/ # *_alpha.csv, boxplots, alpha_summary.csv
+        └── bm25_tuning/        # *_bm25_tuning.csv, *_bm25_best.json
 ```
 
 ---
@@ -110,7 +113,7 @@ dataset you want to compare. Start with the small ones (`scifact`, `nfcorpus`,
 `fiqa`, `scidocs`, `arguana`) plus the lexical-leaning `trec-covid` and
 `webis-touche2020`; leave the million-doc sets for last.
 
-### Outputs (in `data/results/`)
+### Outputs (in `data/results/alpha_distribution/`)
 
 | File | Description |
 |------|-------------|
@@ -118,6 +121,16 @@ dataset you want to compare. Start with the small ones (`scifact`, `nfcorpus`,
 | `<name>_alpha_boxplot.png` | oracle alpha boxplot for that dataset |
 | `combined_alpha_boxplot.png` | all processed datasets side by side |
 | `alpha_summary.csv` | per-dataset mean/median/std/IQR of alpha, mean NDCGs, ranked by spread |
+
+### Tuning BM25 (optional, on the chosen dataset)
+
+```bash
+python src/tune_bm25.py   # grid-search k1/b/stemming -> results/bm25_tuning/
+```
+
+Writes `<name>_bm25_tuning.csv` (every combination) and `<name>_bm25_best.json`
+(the winner by mean NDCG@100). Copy the best `k1`/`b`/`use_stemming` into the
+`bm25` block of [config.yaml](config.yaml) manually.
 
 `alpha_distribution.py` also prints which dataset has the **highest alpha
 spread** and which has the **median closest to 0.5**.

@@ -11,8 +11,8 @@ Scales to very large corpora (e.g. MS MARCO, 8.8M docs) without OOM:
   * the corpus dict is freed as soon as the texts are extracted;
   * documents are encoded SHARD BY SHARD and streamed straight into a .npy
     MEMMAP, so the full embedding matrix is never resident in RAM;
-  * embeddings are stored in `dense.embedding_dtype` (default float16), halving
-    RAM/disk versus float32.
+  * embeddings are stored in `dense.embedding_dtype` (default float32, full
+    precision; set to float16 in config.yaml to halve RAM/disk if needed).
 
 Progress: an outer tqdm bar over shards (inner per-batch bar suppressed to keep
 logs readable on multi-million-doc corpora).
@@ -70,7 +70,7 @@ def main():
         model.max_seq_length = d_conf["max_seq_length"]
 
     dim = model.get_sentence_embedding_dimension()
-    dtype = DTYPES.get(str(d_conf.get("embedding_dtype", "float16")).lower(), np.float16)
+    dtype = DTYPES.get(str(d_conf.get("embedding_dtype", "float32")).lower(), np.float32)
     normalize = d_conf.get("normalize", True)
     batch_size = d_conf.get("batch_size", 256)
     shard = int(d_conf.get("encode_shard_size", 100000))

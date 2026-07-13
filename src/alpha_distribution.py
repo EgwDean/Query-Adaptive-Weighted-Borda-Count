@@ -129,8 +129,10 @@ def dense_retrieve(name, paths, qids, top_k, d_conf):
         dev = "cuda"
     elif requested != "cpu":
         print("[alpha] CUDA not available -- dense retrieval on CPU.")
-    # fp16 matmul is unsupported/slow on CPU -> compute in fp32 there.
-    dtype = torch.float16 if dev == "cuda" else torch.float32
+    # Match the dtype embeddings were stored in (default float32). fp16 matmul
+    # is unsupported/slow on CPU -> always compute in fp32 there.
+    stored = str(d_conf.get("embedding_dtype", "float32")).lower()
+    dtype = torch.float16 if (dev == "cuda" and stored == "float16") else torch.float32
 
     n_doc, dim = corpus_emb.shape
     k = min(top_k, n_doc)
@@ -203,14 +205,14 @@ def plot_single(df, name, paths):
     plt.ylabel("oracle alpha   (1 = BM25 / lexical,  0 = dense / semantic)")
     plt.title(f"{name}\nmedian={df['alpha'].median():.2f}  IQR={iqr:.2f}")
     plt.tight_layout()
-    out = os.path.join(paths["results"], f"{name}_alpha_boxplot.png")
+    out = os.path.join(paths["alpha_results"], f"{name}_alpha_boxplot.png")
     plt.savefig(out, dpi=150)
     plt.close()
     print(f"[alpha] wrote {out}")
 
 
 def plot_combined(paths):
-    files = sorted(glob.glob(os.path.join(paths["results"], "*_alpha.csv")))
+    files = sorted(glob.glob(os.path.join(paths["alpha_results"], "*_alpha.csv")))
     if not files:
         return
     alldf = pd.concat((pd.read_csv(f) for f in files), ignore_index=True)
@@ -224,14 +226,14 @@ def plot_combined(paths):
     plt.xticks(rotation=30, ha="right")
     plt.title("Oracle alpha distribution per dataset")
     plt.tight_layout()
-    out = os.path.join(paths["results"], "combined_alpha_boxplot.png")
+    out = os.path.join(paths["alpha_results"], "combined_alpha_boxplot.png")
     plt.savefig(out, dpi=150)
     plt.close()
     print(f"[alpha] wrote {out}")
 
 
 def write_summary(paths):
-    files = sorted(glob.glob(os.path.join(paths["results"], "*_alpha.csv")))
+    files = sorted(glob.glob(os.path.join(paths["alpha_results"], "*_alpha.csv")))
     if not files:
         return
     recs = []
@@ -252,7 +254,7 @@ def write_summary(paths):
             "oracle_ndcg": round(d["oracle_ndcg"].mean(), 4),
         })
     s = pd.DataFrame(recs).sort_values("alpha_iqr", ascending=False).reset_index(drop=True)
-    out = os.path.join(paths["results"], "alpha_summary.csv")
+    out = os.path.join(paths["alpha_results"], "alpha_summary.csv")
     s.to_csv(out, index=False)
     print(f"[alpha] wrote {out}\n")
     print(s.to_string(index=False))
@@ -314,7 +316,7 @@ def main():
         })
 
     df = pd.DataFrame(rows)
-    out_csv = os.path.join(paths["results"], f"{name}_alpha.csv")
+    out_csv = os.path.join(paths["alpha_results"], f"{name}_alpha.csv")
     df.to_csv(out_csv, index=False)
     print(f"[alpha] wrote {out_csv}  ({len(df):,} queries)")
 

@@ -59,7 +59,11 @@ paths:
   data_dir: data
   datasets_subdir: datasets         # data/datasets/<dataset>/   (raw BEIR)
   processed_subdir: processed_data  # data/processed_data/<dataset>/ (embeddings)
-  results_subdir: results           # data/results/  (csv + boxplots)
+  results_subdir: results           # data/results/
+  # One sub-folder inside results/ per experiment phase, so each phase's outputs
+  # stay separate (dataset-selection now; model-training benchmarks later).
+  alpha_results_subdir: alpha_distribution  # data/results/alpha_distribution/
+  bm25_tuning_subdir: bm25_tuning           # data/results/bm25_tuning/
 
 # ---- LEXICAL RETRIEVER: BM25 -----------------------------------------------
 # BM25 is the lexical representative. There is NO universal best k1/b -- it is
@@ -75,6 +79,17 @@ bm25:
   b: 0.75               # length normalisation         (Lucene/Elasticsearch default)
   use_stemming: true    # Snowball (english) stemming via PyStemmer
 
+# ---- BM25 TUNING GRID (src/tune_bm25.py) -----------------------------------
+# Grid search over k1, b, and stemming on the ACTIVE dataset. Every combination
+# retrieves all queries and is scored by mean NDCG@100; the best combination is
+# written to results/bm25_tuning/ for you to copy into the `bm25` block above.
+# Values below are the well-known BM25 settings (Anserini 0.9/0.4, Lucene 1.2/0.75,
+# classic Okapi ranges). Default grid = 8 x 7 x 2 = 112 runs.
+bm25_tuning:
+  k1: [0.4, 0.6, 0.8, 0.9, 1.0, 1.2, 1.6, 2.0]
+  b:  [0.3, 0.4, 0.5, 0.6, 0.75, 0.9, 1.0]
+  use_stemming: [true, false]
+
 # ---- SEMANTIC RETRIEVER: dense embeddings ----------------------------------
 # all-mpnet-base-v2 chosen deliberately for STRENGTH PARITY with tuned BM25
 # (so the oracle alpha is not collapsed to a corner). 768-dim, cosine, no
@@ -83,16 +98,17 @@ bm25:
 # Memory scaling (so datasets up to MS MARCO's 8.8M docs fit on this box):
 #   - embeddings are written to a .npy MEMMAP shard-by-shard, so the full
 #     matrix is never held in RAM while encoding;
-#   - float16 storage halves RAM/disk (8.8M x 768: 27 GB fp32 -> 13.5 GB fp16);
+#   - embedding_dtype=float32 (default) keeps full precision (8.8M x 768: ~27 GB
+#     on disk); set to float16 to halve RAM/disk (~13.5 GB) if space is tight;
 #   - dense retrieval scans the corpus in CHUNKS on the GPU, so VRAM stays flat
-#     regardless of corpus size.
+#     regardless of corpus size, and matches embedding_dtype (fp32 by default).
 dense:
   model_name: sentence-transformers/all-mpnet-base-v2
   batch_size: 256          # encoding batch size (lower if GPU OOM)
   max_seq_length: 384      # truncation length for documents
   normalize: true          # L2-normalise -> dot product == cosine
   device: cuda             # "cuda" or "cpu"; falls back to cpu automatically
-  embedding_dtype: float16 # cached embedding storage: float16 (half RAM/disk) or float32
+  embedding_dtype: float32 # cached embedding storage: float32 (full precision) or float16 (half RAM/disk)
   encode_shard_size: 100000  # docs encoded per shard, streamed to the memmap (caps host RAM)
   retrieval_chunk_size: 50000 # corpus rows scored per GPU block in dense retrieval (caps VRAM)
 

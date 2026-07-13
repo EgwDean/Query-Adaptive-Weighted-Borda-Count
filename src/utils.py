@@ -27,15 +27,19 @@ def get_paths(config, create=True):
     root = repo_root()
     p = config["paths"]
     data_dir = os.path.join(root, p["data_dir"])
+    results = os.path.join(data_dir, p["results_subdir"])
     paths = {
         "root": root,
         "data": data_dir,
         "datasets": os.path.join(data_dir, p["datasets_subdir"]),
         "processed": os.path.join(data_dir, p["processed_subdir"]),
-        "results": os.path.join(data_dir, p["results_subdir"]),
+        "results": results,
+        # per-phase sub-folders inside results/
+        "alpha_results": os.path.join(results, p.get("alpha_results_subdir", "alpha_distribution")),
+        "bm25_tuning": os.path.join(results, p.get("bm25_tuning_subdir", "bm25_tuning")),
     }
     if create:
-        for key in ("datasets", "processed", "results"):
+        for key in ("datasets", "processed", "results", "alpha_results", "bm25_tuning"):
             os.makedirs(paths[key], exist_ok=True)
     return paths
 
