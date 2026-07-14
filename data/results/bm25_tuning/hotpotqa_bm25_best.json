@@ -1,0 +1,9 @@
+{
+  "dataset": "hotpotqa",
+  "method": "lucene",
+  "k1": 0.8,
+  "b": 0.4,
+  "use_stemming": true,
+  "mean_ndcg@100": 0.666279,
+  "n_queries": 7405
+}
