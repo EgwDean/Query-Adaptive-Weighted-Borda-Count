@@ -170,6 +170,9 @@ spread** and which has the **median closest to 0.5**.
 * [docs/comparison_methods.md](docs/comparison_methods.md) — the baselines and
   retrieval paradigms to evaluate against (single retrievers, static fusion,
   adaptive fusion, SPLADE, reranker, oracle ceiling).
+* [docs/bm25_parameter_history.md](docs/bm25_parameter_history.md) — which BM25
+  `k1`/`b`/`use_stemming` were active for each `data/results/` run, since
+  `tune_bm25.py` re-tunes these per dataset and `config.yaml` changes over time.
 
 ---
 

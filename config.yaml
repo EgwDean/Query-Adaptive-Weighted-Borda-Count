@@ -67,17 +67,17 @@ paths:
 
 # ---- LEXICAL RETRIEVER: BM25 -----------------------------------------------
 # BM25 is the lexical representative. There is NO universal best k1/b -- it is
-# corpus-dependent. We fix the classic Lucene/Elasticsearch defaults k1=1.2,
-# b=0.75 as a uniform, well-justified setting for the (variable-length) BEIR
-# corpora -- b=0.75 = full length normalisation, appropriate for heterogeneous
-# doc lengths (cf. Anserini's k1=0.9, b=0.4, which were tuned for short, uniform
-# MS MARCO passages). A per-corpus k1/b grid-search will be added once the final
-# dataset is chosen. Snowball (english) stemming is applied.
+# corpus-dependent, which is why src/tune_bm25.py grid-searches it per dataset
+# (see bm25_tuning below) rather than relying on a fixed literature default.
+#
+# Values below = tune_bm25.py output for dataset: hotpotqa (mean NDCG@100 over
+# all queries with qrels; see data/results/bm25_tuning/ for the full grid).
+# Re-run tune_bm25.py and update this block whenever `dataset:` changes.
 bm25:
   method: lucene        # bm25s scoring variant: lucene | robertson | atire | bm25l | bm25+
-  k1: 1.2               # term-frequency saturation   (Lucene/Elasticsearch default)
-  b: 0.75               # length normalisation         (Lucene/Elasticsearch default)
-  use_stemming: true    # Snowball (english) stemming via PyStemmer
+  k1: 0.8                # tuned on hotpotqa via src/tune_bm25.py
+  b: 0.4                 # tuned on hotpotqa via src/tune_bm25.py
+  use_stemming: true    # tuned on hotpotqa via src/tune_bm25.py
 
 # ---- BM25 TUNING GRID (src/tune_bm25.py) -----------------------------------
 # Grid search over k1, b, and stemming on the ACTIVE dataset. Every combination
