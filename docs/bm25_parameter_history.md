@@ -49,6 +49,23 @@ bm25:
 `data/results/alpha_distribution/hotpotqa_alpha.csv` still reflects **Run 1**
 parameters (k1=1.2, b=0.75), not this tuned setting.
 
+## Metric change: NDCG@100 -> NDCG@eval_k (NDCG@10, primary)
+
+`config.yaml` originally used a single `retrieval.top_k` (100) for BOTH the
+candidate/Borda pool depth AND the NDCG evaluation cutoff, so **Run 1 and
+Run 2 above were both scored with NDCG@100**. `retrieval.top_k` and
+`retrieval.eval_k` were later decoupled: `top_k` (100) stays the candidate pool
+/ Borda list length N (unchanged, for use in future NDCG@100 evaluation); the
+project's **primary metric is now NDCG@eval_k, with `eval_k: 10`**. This
+affects `tune_bm25.py`'s scoring metric too (it now optimises NDCG@10, not
+NDCG@100). **Run 2's hotpotqa tuning (k1=0.8, b=0.4) was selected under the
+old NDCG@100 metric** and has not been re-run under NDCG@10 — the winning
+parameters may differ slightly if re-tuned. `alpha_distribution.py`'s output
+CSVs now carry an `eval_k` column so future runs are self-documenting; older
+CSVs (Run 1, all 14 datasets) lack this column and should be treated as
+NDCG@100 per this history file, not silently mixed with NDCG@10 results in
+`alpha_summary.csv` (the script now warns if a summary mixes cutoffs).
+
 ## Implication for dataset selection
 
 The Phase-1 dataset-selection comparison (`alpha_summary.csv`, the combined

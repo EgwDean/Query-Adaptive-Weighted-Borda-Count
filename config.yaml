@@ -113,16 +113,27 @@ dense:
   retrieval_chunk_size: 50000 # corpus rows scored per GPU block in dense retrieval (caps VRAM)
 
 # ---- RETRIEVAL DEPTH -------------------------------------------------------
+# top_k    = candidate pool depth per retriever, AND the Weighted Borda list
+#            length N (fusion headroom / recall pool). Raised to 1000 to match
+#            standard BEIR practice (retrieve deep via pytrec_eval, evaluate at
+#            a shallower cutoff) -- see docs/bm25_parameter_history.md for the
+#            depth-100 -> depth-1000 transition and why it matters for Phase 1.
+# eval_k   = the cutoff used to SCORE and SELECT: oracle-alpha search,
+#            tune_bm25.py, and the reported NDCG columns. Deliberately
+#            DECOUPLED from top_k -- candidates are pooled at top_k for
+#            fusion headroom, but quality is judged/optimised at a realistic,
+#            BEIR-standard depth. PRIMARY METRIC = NDCG@eval_k (NDCG@10).
 retrieval:
-  top_k: 100            # top-N docs returned by each retriever (the two ranks)
+  top_k: 1000            # candidate pool depth per retriever + Borda list length N
+  eval_k: 10              # evaluation / oracle-alpha-selection cutoff (primary metric: NDCG@10)
 
 # ---- WEIGHTED BORDA COUNT --------------------------------------------------
 # score(d) = alpha*(N - rank_sparse(d)) + (1-alpha)*(N - rank_dense(d))
 # alpha = 1 -> pure BM25 (lexical) ; alpha = 0 -> pure dense (semantic).
-# Oracle alpha = the alpha maximising NDCG@top_k for that query (lowest alpha
-# wins ties). N is the Borda list length (= retrieval depth).
+# Oracle alpha = the alpha maximising NDCG@eval_k for that query (lowest alpha
+# wins ties). N is the Borda list length (= retrieval.top_k, the candidate pool).
 borda:
-  N: 100                # Borda list length (keep equal to retrieval.top_k)
+  N: 1000                # Borda list length (keep equal to retrieval.top_k)
   alpha_min: 0.0
   alpha_max: 1.0
   alpha_step: 0.01      # 101-point grid search per query

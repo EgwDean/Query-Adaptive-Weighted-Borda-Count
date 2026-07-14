@@ -2,7 +2,9 @@
 
 For the dataset named in config.yaml, tries every combination of the
 `bm25_tuning` grid (k1 x b x use_stemming), retrieves all queries with each,
-scores them by mean NDCG@100, and reports the best combination.
+scores them by mean NDCG@eval_k (retrieval.eval_k, default 10 -- the project's
+PRIMARY metric; independent of retrieval.top_k, which is the fusion candidate
+pool used elsewhere and not needed here), and reports the best combination.
 
 Outputs (to results/bm25_tuning/):
     <dataset>_bm25_tuning.csv  -- every combination and its mean NDCG@100
@@ -81,7 +83,7 @@ def main():
     name = config["dataset"]
     split = config.get("split", "test")
     method = config["bm25"].get("method", "lucene")
-    k = config["retrieval"]["top_k"]
+    k = config["retrieval"].get("eval_k", 10)   # PRIMARY metric: NDCG@eval_k (default 10)
 
     grid = config["bm25_tuning"]
     k1_vals = list(grid["k1"])

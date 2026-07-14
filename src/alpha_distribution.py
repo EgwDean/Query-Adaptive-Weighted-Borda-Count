@@ -1,11 +1,15 @@
 """alpha_distribution.py -- per-query oracle alpha for Weighted Borda Count.
 
 For the active dataset (config.yaml):
-  1. Retrieve top-k with BM25 (lexical) and the cached dense embeddings.
+  1. Retrieve top retrieval.top_k with BM25 (lexical) and the cached dense
+     embeddings -- this is the candidate pool / Borda list length N.
   2. For every query, fuse the two ranked lists with Weighted Borda Count
          score(d) = alpha*(N - rank_sparse(d)) + (1-alpha)*(N - rank_dense(d))
      over a grid of alpha in [0, 1], and record the alpha that maximises
-     NDCG@k (lowest alpha wins ties) as that query's ORACLE ALPHA.
+     NDCG@eval_k (lowest alpha wins ties) as that query's ORACLE ALPHA.
+     retrieval.eval_k (default 10, the PRIMARY metric) is deliberately
+     decoupled from top_k: candidates are pooled at top_k for fusion headroom,
+     but quality is judged/optimised at a realistic, BEIR-standard depth.
          alpha = 1 -> pure BM25 (lexical) ; alpha = 0 -> pure dense (semantic).
   3. Save per-query results, a per-dataset boxplot, and -- across every dataset
      processed so far -- a combined boxplot and a summary table ranking
@@ -241,9 +245,14 @@ def write_summary(paths):
         d = pd.read_csv(f)
         a = d["alpha"]
         q1, q3 = a.quantile(0.25), a.quantile(0.75)
+        # eval_k/top_k columns are absent in CSVs written before the
+        # top_k/eval_k split (see docs/bm25_parameter_history.md-style history);
+        # report as "?" rather than silently assuming a value.
+        eval_k = str(int(d["eval_k"].iloc[0])) if "eval_k" in d.columns else "?"
         recs.append({
             "dataset": d["dataset"].iloc[0],
             "n_queries": len(d),
+            "eval_k": eval_k,
             "alpha_mean": round(a.mean(), 4),
             "alpha_median": round(a.median(), 4),
             "alpha_std": round(a.std(), 4),
@@ -254,6 +263,12 @@ def write_summary(paths):
             "oracle_ndcg": round(d["oracle_ndcg"].mean(), 4),
         })
     s = pd.DataFrame(recs).sort_values("alpha_iqr", ascending=False).reset_index(drop=True)
+    if s["eval_k"].nunique() > 1:
+        print(f"[alpha] WARNING: datasets in this summary were scored at different "
+              f"NDCG cutoffs ({sorted(s['eval_k'].unique())}) -- NDCG columns are "
+              f"NOT directly comparable across rows until all datasets are re-run "
+              f"under the same eval_k. See docs/bm25_parameter_history.md for the "
+              f"analogous BM25-parameter caveat.")
     out = os.path.join(paths["alpha_results"], "alpha_summary.csv")
     s.to_csv(out, index=False)
     print(f"[alpha] wrote {out}\n")
@@ -271,7 +286,8 @@ def main():
     name = config["dataset"]
     split = config.get("split", "test")
     N = config["borda"]["N"]
-    k = config["retrieval"]["top_k"]
+    k_pool = config["retrieval"]["top_k"]              # candidate depth + Borda list length
+    k_eval = config["retrieval"].get("eval_k", 10)     # NDCG evaluation / oracle-alpha cutoff (primary)
     alphas = np.round(
         np.arange(config["borda"]["alpha_min"],
                   config["borda"]["alpha_max"] + 1e-9,
@@ -283,7 +299,7 @@ def main():
     doc_ids = list(corpus.keys())
     qids = [q for q in queries if q in qrels and len(qrels[q]) > 0]
     print(f"[alpha] '{name}': {len(doc_ids):,} docs | {len(qids):,} queries with qrels "
-          f"| alpha grid={len(alphas)} pts | top_k={k}")
+          f"| alpha grid={len(alphas)} pts | top_k={k_pool} | primary metric=NDCG@{k_eval}")
 
     # Extract doc texts, then FREE the corpus dict (can be ~10s of GB on MS MARCO)
     # before BM25 indexing. Dense retrieval reads embeddings from disk, not corpus.
@@ -291,18 +307,20 @@ def main():
     del corpus
     gc.collect()
 
-    bm = bm25_retrieve(doc_texts, doc_ids, queries, qids, config["bm25"], k)
+    bm = bm25_retrieve(doc_texts, doc_ids, queries, qids, config["bm25"], k_pool)
     del doc_texts
     gc.collect()
 
-    dn = dense_retrieve(name, paths, qids, k, config["dense"])
+    dn = dense_retrieve(name, paths, qids, k_pool, config["dense"])
 
     rows = []
     for q in tqdm(qids, desc="[alpha] fuse + score"):
         rels = {d: int(g) for d, g in qrels[q].items() if int(g) > 0}
         if not rels:
             continue
-        a_star, nd = oracle_alpha(bm[q], dn[q], rels, N, alphas, k)
+        # Borda points over the full top_k pool (N), but oracle-alpha selection
+        # and the reported NDCG are scored at eval_k (primary metric, NDCG@10).
+        a_star, nd = oracle_alpha(bm[q], dn[q], rels, N, alphas, k_eval)
         if a_star is None:
             continue
         rows.append({
@@ -310,10 +328,12 @@ def main():
             "qid": q,
             "alpha": a_star,
             "oracle_ndcg": nd,
-            "bm25_ndcg": ndcg_at_k(bm[q], rels, k) or 0.0,
-            "dense_ndcg": ndcg_at_k(dn[q], rels, k) or 0.0,
+            "bm25_ndcg": ndcg_at_k(bm[q], rels, k_eval) or 0.0,
+            "dense_ndcg": ndcg_at_k(dn[q], rels, k_eval) or 0.0,
             "n_rel": len(rels),
-        })
+            "eval_k": k_eval,          # NDCG cutoff used for this row -- see
+            "top_k": k_pool,           # docs/bm25_parameter_history.md-style history:
+        })                              # older CSVs predate the top_k/eval_k split.
 
     df = pd.DataFrame(rows)
     out_csv = os.path.join(paths["alpha_results"], f"{name}_alpha.csv")

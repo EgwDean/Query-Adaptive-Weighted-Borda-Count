@@ -173,6 +173,10 @@ spread** and which has the **median closest to 0.5**.
 * [docs/bm25_parameter_history.md](docs/bm25_parameter_history.md) — which BM25
   `k1`/`b`/`use_stemming` were active for each `data/results/` run, since
   `tune_bm25.py` re-tunes these per dataset and `config.yaml` changes over time.
+* [docs/inference_feature_inventory.md](docs/inference_feature_inventory.md) —
+  Phase-2 dataset-build plan: which router features from
+  `ltr_router_features.md` are actually computable at inference time (no
+  qrels), the one-time corpus assets needed, and the recommended v1 feature set.
 
 ---
 
