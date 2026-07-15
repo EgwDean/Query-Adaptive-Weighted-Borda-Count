@@ -15,7 +15,7 @@
 
 # ---- ACTIVE DATASET --------------------------------------------------------
 # Change this line for each run, then re-run the three scripts.
-dataset: nfcorpus
+dataset: hotpotqa
 
 # ---- BEIR DATASET CATALOGUE ------------------------------------------------
 # Uncomment the one you want into `dataset:` above. Stats are approximate
