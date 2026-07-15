@@ -64,14 +64,18 @@ carry forward.
 ├── clean.sh                 # delete datasets/embeddings, keep results
 ├── README.md
 ├── docs/
-│   ├── ltr_router_features.md  # Phase-2 router feature catalogue (QPP + routing)
-│   └── comparison_methods.md   # baselines & methods to compare against
+│   ├── ltr_router_features.md      # Phase-2 router feature catalogue (QPP + routing)
+│   ├── inference_feature_inventory.md # which features are usable at inference time
+│   ├── feature_dataset.md          # final feature dataset dict + project history
+│   ├── comparison_methods.md       # baselines & methods to compare against
+│   └── bm25_parameter_history.md   # BM25 params / metric changes per results run
 ├── src/
-│   ├── utils.py             # config + path helpers
+│   ├── utils.py             # config + path helpers (+ shared build_doc_text)
 │   ├── download.py          # download one BEIR dataset (tqdm)
 │   ├── embed.py             # embed docs + queries (all-mpnet-base-v2, tqdm)
 │   ├── alpha_distribution.py# BM25 + dense + oracle alpha + boxplots
-│   ├── tune_bm25.py         # grid-search BM25 k1/b/stemming by NDCG@100
+│   ├── tune_bm25.py         # grid-search BM25 k1/b/stemming by NDCG@eval_k
+│   ├── create_dataset.py    # Phase-2 feature dataset (per-split, features + oracle alpha)
 │   └── dataset_pipeline.py  # run download -> embed -> alpha_distribution
 └── data/
     ├── datasets/<name>/        # raw BEIR corpus, queries, qrels
@@ -177,6 +181,9 @@ spread** and which has the **median closest to 0.5**.
   Phase-2 dataset-build plan: which router features from
   `ltr_router_features.md` are actually computable at inference time (no
   qrels), the one-time corpus assets needed, and the recommended v1 feature set.
+* [docs/feature_dataset.md](docs/feature_dataset.md) — data dictionary for the
+  feature dataset `create_dataset.py` produces (every column + how computed),
+  plus a narrative of the whole project so far.
 
 ---
 

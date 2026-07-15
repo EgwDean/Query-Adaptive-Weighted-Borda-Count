@@ -45,18 +45,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from utils import load_config, get_paths, dataset_dir, processed_dir
+from utils import load_config, get_paths, dataset_dir, processed_dir, build_doc_text
 
 
 # --------------------------------------------------------------------------- #
 # Text + metrics
 # --------------------------------------------------------------------------- #
-def build_doc_text(doc):
-    title = (doc.get("title") or "").strip()
-    text = (doc.get("text") or "").strip()
-    return (title + " " + text).strip() if title else text
-
-
 def dcg_at_k(ranked_ids, rels, k):
     """Discounted cumulative gain with gain = 2^rel - 1 (trec_eval / BEIR)."""
     s = 0.0

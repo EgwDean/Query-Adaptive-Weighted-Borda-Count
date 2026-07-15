@@ -37,16 +37,10 @@ except ImportError:  # PyStemmer optional; stemming combos skipped with a warnin
 
 from beir.datasets.data_loader import GenericDataLoader
 
-from utils import load_config, get_paths, dataset_dir
+from utils import load_config, get_paths, dataset_dir, build_doc_text
 
 
-# --- text + NDCG (kept local so this script needs no torch/matplotlib) ------
-def build_doc_text(doc):
-    title = (doc.get("title") or "").strip()
-    text = (doc.get("text") or "").strip()
-    return (title + " " + text).strip() if title else text
-
-
+# --- NDCG (kept local so this script needs no torch/matplotlib) -------------
 def ndcg_at_k(ranked_ids, rels, k):
     """NDCG@k with gain 2^rel - 1. None when the query has no relevant docs."""
     ideal = sorted((g for g in rels.values() if g > 0), reverse=True)[:k]

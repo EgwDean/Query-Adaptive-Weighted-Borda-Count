@@ -37,9 +37,10 @@ def get_paths(config, create=True):
         # per-phase sub-folders inside results/
         "alpha_results": os.path.join(results, p.get("alpha_results_subdir", "alpha_distribution")),
         "bm25_tuning": os.path.join(results, p.get("bm25_tuning_subdir", "bm25_tuning")),
+        "feature_dataset": os.path.join(results, p.get("feature_dataset_subdir", "feature_dataset")),
     }
     if create:
-        for key in ("datasets", "processed", "results", "alpha_results", "bm25_tuning"):
+        for key in ("datasets", "processed", "results", "alpha_results", "bm25_tuning", "feature_dataset"):
             os.makedirs(paths[key], exist_ok=True)
     return paths
 
@@ -47,6 +48,17 @@ def get_paths(config, create=True):
 def dataset_dir(paths, name):
     """data/datasets/<name>/ -- raw BEIR corpus, queries, qrels."""
     return os.path.join(paths["datasets"], name)
+
+
+def build_doc_text(doc):
+    """BEIR docs are {'title': ..., 'text': ...}; concatenate when titled.
+
+    Shared by embed.py / tune_bm25.py / alpha_distribution.py / create_dataset.py
+    so every stage builds document text identically.
+    """
+    title = (doc.get("title") or "").strip()
+    text = (doc.get("text") or "").strip()
+    return (title + " " + text).strip() if title else text
 
 
 def processed_dir(paths, name, create=True):

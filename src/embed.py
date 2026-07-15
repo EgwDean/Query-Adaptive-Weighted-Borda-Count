@@ -31,16 +31,9 @@ from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
 from beir.datasets.data_loader import GenericDataLoader
 
-from utils import load_config, get_paths, dataset_dir, processed_dir
+from utils import load_config, get_paths, dataset_dir, processed_dir, build_doc_text
 
 DTYPES = {"float16": np.float16, "float32": np.float32}
-
-
-def build_doc_text(doc):
-    """BEIR docs are {'title': ..., 'text': ...}; concatenate when titled."""
-    title = (doc.get("title") or "").strip()
-    text = (doc.get("text") or "").strip()
-    return (title + " " + text).strip() if title else text
 
 
 def _resolve_device(requested):
