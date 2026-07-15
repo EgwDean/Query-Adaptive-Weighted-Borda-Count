@@ -4,6 +4,6 @@
   "k1": 0.8,
   "b": 0.4,
   "use_stemming": true,
-  "mean_ndcg@100": 0.666279,
+  "mean_ndcg@10": 0.630082,
   "n_queries": 7405
 }
