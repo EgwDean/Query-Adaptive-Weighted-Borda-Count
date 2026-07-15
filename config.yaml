@@ -15,7 +15,7 @@
 
 # ---- ACTIVE DATASET --------------------------------------------------------
 # Change this line for each run, then re-run the three scripts.
-dataset: scifact
+dataset: nfcorpus
 
 # ---- BEIR DATASET CATALOGUE ------------------------------------------------
 # Uncomment the one you want into `dataset:` above. Stats are approximate
@@ -152,7 +152,7 @@ create_dataset:
   coherence_window: 100        # W: top-W / bottom-W docs for autocorrelation & A-Pair-Ratio
   score_window_k: 100          # top-N scores for distribution-shape features (sigma_k/WIG/NQC/SMV/entropy/robust + z-cross); the deep top_k tail is retrieval noise. top_score/margin still use the very top; retrieval/fusion still use full top_k.
   zscore_eps: 1.0e-9           # epsilon guarding all divisions / normalisations
-  debug_max_queries: 50      # cap queries per split for smoke tests (null = all queries)
+  debug_max_queries: null      # cap queries per split for smoke tests (null = all queries)
   # Ablation toggles -- set any to false to drop that feature group from the CSV.
   features:
     query_only: true           # group A: ql, IDF-family, SCS, AvICTF, SCQ, VAR, query-centroid cosine
