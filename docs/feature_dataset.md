@@ -68,7 +68,12 @@ frequency; `cf` = collection frequency; `tokens_coll` = total tokens;
 | `pmi_avg` | mean pairwise PMI of query terms from co-occurrence counts (`features.pmi`) |
 
 ### B/C. Per-retriever score distribution (`features.per_retriever_scores`)
-Computed **twice**, suffix `_bm25` and `_dense`.
+Computed **twice**, suffix `_bm25` and `_dense`. Distribution-shape stats
+(`sigma_k`, `wig`, `nqc`, `smv`, `entropy`, `robust_sigma`) use the top
+`score_window_k` scores (default 100); the deep top_k tail is retrieval noise
+that dilutes them (e.g. it drives WIG systematically negative). `top_score` and
+`margin` still come from the very top; retrieval/fusion still use the full
+`top_k` pool.
 
 | Column | Computation |
 |---|---|
@@ -105,8 +110,9 @@ against the whole corpus treated as one document (from `cf`, `tokens_coll`,
 
 **Cross-retriever scale-invariance = z-score.** BM25 scores and cosine
 similarities are incommensurable, so before any cross-retriever *difference*
-each retriever's top-k score vector is standardised to mean 0 / std 1 per query
-(`z = (s-μ)/sd`); the `d_*` features difference those standardised quantities.
+each retriever's top-`score_window_k` score vector is standardised to mean 0 /
+std 1 per query (`z = (s-μ)/sd`); the `d_*` features difference those
+standardised quantities. `jaccard`/`kendall_tau` use the full top_k lists.
 
 ---
 

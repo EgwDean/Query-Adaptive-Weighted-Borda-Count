@@ -276,23 +276,31 @@ def _pmi_avg(term_ids, assets, eps):
 
 
 def per_retriever_features(prefix, scores, rows, baseline, assets, feat_cfg, cfg, eps):
-    """Groups B/C for ONE retriever's ranked list. `scores` desc, `rows` = doc row ids."""
+    """Groups B/C for ONE retriever's ranked list. `scores` desc, `rows` = doc row ids.
+
+    Distribution-shape stats (sigma_k, WIG, NQC, SMV, entropy, robust_sigma) use
+    only the top `score_window_k` scores -- the deep top_k tail is retrieval
+    noise that dilutes them. `top_score` and `margin` still come from the very
+    top of the list, and retrieval/fusion still use the full top_k pool.
+    """
     f = {}
     s = np.asarray(scores, dtype=np.float64)
-    k = len(s)
-    mu, sd = s.mean(), s.std()
+    window = int(cfg.get("score_window_k", 100))
+    sw = s[:window]                                         # windowed score vector
+    kw = len(sw)
+    mu, sd = sw.mean(), sw.std()
     f[f"top_score_{prefix}"] = float(s[0])
     f[f"sigma_k_{prefix}"] = float(sd)
-    f[f"margin_{prefix}"] = float(s[0] - s[1]) if k > 1 else 0.0
-    f[f"norm_margin_{prefix}"] = float((s[0] - s[1]) / (abs(s[0]) + eps)) if k > 1 else 0.0
+    f[f"margin_{prefix}"] = float(s[0] - s[1]) if len(s) > 1 else 0.0
+    f[f"norm_margin_{prefix}"] = float((s[0] - s[1]) / (abs(s[0]) + eps)) if len(s) > 1 else 0.0
     f[f"wig_{prefix}"] = float(mu - baseline)
     f[f"nqc_{prefix}"] = float(sd / (abs(baseline) + eps))
-    sp = np.maximum(s, eps)                                  # SMV assumes positive magnitudes
+    sp = np.maximum(sw, eps)                                # SMV assumes positive magnitudes
     mup = sp.mean()
     f[f"smv_{prefix}"] = float(((sp / mup) * np.abs(np.log(sp / mup))).mean())
-    f[f"entropy_{prefix}"] = _entropy(_softmax(s))
-    trim = max(1, int(0.1 * k))
-    f[f"robust_sigma_{prefix}"] = float(np.sort(s)[trim:k - trim].std()) if k - 2 * trim > 1 else float(sd)
+    f[f"entropy_{prefix}"] = _entropy(_softmax(sw))
+    trim = max(1, int(0.1 * kw))
+    f[f"robust_sigma_{prefix}"] = float(np.sort(sw)[trim:kw - trim].std()) if kw - 2 * trim > 1 else float(sd)
 
     if feat_cfg.get("coherence", True):
         f.update(_coherence(prefix, s, rows, assets, cfg, eps))
@@ -360,8 +368,13 @@ def clarity_feature(prefix, scores, rows, assets, cfg, eps):
     return {f"clarity_{prefix}": float(cs)}
 
 
-def cross_retriever_features(bm_rows, dn_rows, s_bm, s_dn, base_bm, base_dn, eps):
-    """Group D: rank-list agreement + Z-SCORE-normalised score-difference features."""
+def cross_retriever_features(bm_rows, dn_rows, s_bm, s_dn, base_bm, base_dn, eps, window):
+    """Group D: rank-list agreement + Z-SCORE-normalised score-difference features.
+
+    Jaccard/Kendall use the full top_k lists (list agreement over the pool); the
+    z-score-difference features use the top-`window` scores, consistent with the
+    per-retriever distribution features.
+    """
     f = {}
     set_b, set_d = set(bm_rows.tolist()), set(dn_rows.tolist())
     inter = set_b & set_d
@@ -378,9 +391,9 @@ def cross_retriever_features(bm_rows, dn_rows, s_bm, s_dn, base_bm, base_dn, eps
     else:
         f["kendall_tau"] = 0.0
 
-    # Z-score each retriever's top-k scores, then difference the standardised stats.
+    # Z-score each retriever's top-window scores, then difference the standardised stats.
     def _z(s):
-        s = np.asarray(s, dtype=np.float64)
+        s = np.asarray(s, dtype=np.float64)[:window]
         mu, sd = s.mean(), s.std()
         z = (s - mu) / (sd + eps)
         zt = z[0]
@@ -409,7 +422,9 @@ def dense_retrieve_scores(q_emb, corpus_emb, top_k, dev, dtype, chunk, qbatch=20
     bytes_per = 2 if dtype == torch.float16 else 4
     Cgpu = None
     if dev == "cuda" and n_doc * dim * bytes_per < 18e9:        # fits comfortably in 24 GB
-        Cgpu = torch.from_numpy(np.ascontiguousarray(corpus_emb[:])).to(dev).to(dtype)
+        # np.array() forces a writable RAM copy (memmap slices are read-only,
+        # which otherwise triggers a torch "non-writable tensor" warning).
+        Cgpu = torch.from_numpy(np.array(corpus_emb[:])).to(dev).to(dtype)
 
     for qs in tqdm(range(0, nq, qbatch), desc="[dataset] dense retrieve"):
         qe = min(qs + qbatch, nq)
@@ -423,7 +438,7 @@ def dense_retrieve_scores(q_emb, corpus_emb, top_k, dev, dtype, chunk, qbatch=20
         run_v = run_i = None
         for start in range(0, n_doc, chunk):
             end = min(start + chunk, n_doc)
-            block = torch.from_numpy(np.ascontiguousarray(corpus_emb[start:end])).to(dev).to(dtype)
+            block = torch.from_numpy(np.array(corpus_emb[start:end])).to(dev).to(dtype)
             sims = Q @ block.T
             kk = min(k, end - start)
             vals, idx = torch.topk(sims, kk, dim=1)
@@ -532,7 +547,8 @@ def process_split(split, folder, canonical_ids, retriever, stemmer, assets,
             row.update(clarity_feature("bm25", s_bm, bm_r, assets, cds, eps))
             row.update(clarity_feature("dense", s_dn, dn_r, assets, cds, eps))
         if feat_cfg.get("cross_retriever", True):
-            row.update(cross_retriever_features(bm_r, dn_r, s_bm, s_dn, base_bm, base_dn, eps))
+            row.update(cross_retriever_features(bm_r, dn_r, s_bm, s_dn, base_bm, base_dn, eps,
+                                                int(cds.get("score_window_k", 100))))
 
         # label + references
         row.update({"alpha": a_star, "oracle_ndcg": nd,

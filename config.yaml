@@ -150,6 +150,7 @@ create_dataset:
   splits: [train, dev, test]   # build a CSV for each split that has qrels (missing splits skipped)
   clarity_feedback_k: 50       # top docs used to build the query LM for Clarity Score (capped)
   coherence_window: 100        # W: top-W / bottom-W docs for autocorrelation & A-Pair-Ratio
+  score_window_k: 100          # top-N scores for distribution-shape features (sigma_k/WIG/NQC/SMV/entropy/robust + z-cross); the deep top_k tail is retrieval noise. top_score/margin still use the very top; retrieval/fusion still use full top_k.
   zscore_eps: 1.0e-9           # epsilon guarding all divisions / normalisations
   debug_max_queries: 50      # cap queries per split for smoke tests (null = all queries)
   # Ablation toggles -- set any to false to drop that feature group from the CSV.
