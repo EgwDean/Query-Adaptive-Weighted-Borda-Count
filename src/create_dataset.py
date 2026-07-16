@@ -46,7 +46,7 @@ except ImportError:
     Stemmer = None
 
 from utils import load_config, get_paths, dataset_dir, processed_dir, build_doc_text
-from alpha_distribution import ndcg_at_k, oracle_alpha
+from alpha_distribution import ndcg_at_k, borda_points
 
 
 # =========================================================================== #
@@ -428,6 +428,38 @@ def cross_retriever_features(bm_rows, dn_rows, s_bm, s_dn, base_bm, base_dn, eps
 
 
 # =========================================================================== #
+# Oracle alpha + the FULL alpha -> NDCG curve
+# =========================================================================== #
+def alpha_ndcg_curve(sparse_list, dense_list, rels, N, alphas, k):
+    """NDCG@k of the Weighted Borda fusion at EVERY alpha on the grid.
+
+    Returns (curve, best_alpha, best_ndcg), or (None, None, None) if the query
+    has no relevant docs. `np.argmax` returns the FIRST maximum, so the lowest
+    alpha wins ties -- consistent with alpha_distribution.oracle_alpha.
+
+    Saving the whole curve (not just the argmax) is what lets ANY predicted
+    alpha be scored later by table lookup instead of re-running retrieval, and
+    it also yields the per-query alpha sensitivity + plateau width.
+    """
+    sp = borda_points(sparse_list, N)
+    dn = borda_points(dense_list, N)
+    docs = list(set(sp) | set(dn))
+    sp_v = np.array([sp.get(d, 0) for d in docs], dtype=np.float64)
+    dn_v = np.array([dn.get(d, 0) for d in docs], dtype=np.float64)
+
+    curve = np.empty(len(alphas), dtype=np.float32)
+    for i, a in enumerate(alphas):
+        scores = a * sp_v + (1.0 - a) * dn_v
+        order = np.argsort(-scores, kind="stable")          # stable -> deterministic ties
+        nd = ndcg_at_k([docs[j] for j in order[:k]], rels, k)
+        if nd is None:
+            return None, None, None
+        curve[i] = nd
+    best_i = int(np.argmax(curve))
+    return curve, float(alphas[best_i]), float(curve[best_i])
+
+
+# =========================================================================== #
 # Dense retrieval WITH scores (query-batched; preloads corpus to GPU if it fits)
 # =========================================================================== #
 def dense_retrieve_scores(q_emb, corpus_emb, top_k, dev, dtype, chunk, qbatch=2048):
@@ -497,7 +529,11 @@ def _resolve_device(requested):
 def process_split(split, folder, canonical_ids, retriever, stemmer, assets,
                   model, config, paths, name, dev, dtype):
     out_csv = os.path.join(paths["feature_dataset"], f"{name}_{split}_features.csv")
-    if os.path.exists(out_csv):
+    curve_path = os.path.join(paths["feature_dataset"], f"{name}_{split}_alpha_ndcg_curve.npy")
+    grid_path = os.path.join(paths["feature_dataset"], f"{name}_alpha_grid.npy")
+    # Require BOTH outputs: a CSV left over from a run that predates the curve
+    # must be rebuilt, not silently skipped.
+    if os.path.exists(out_csv) and os.path.exists(curve_path):
         print(f"[dataset] split '{split}' already built ({out_csv}) -- skipping.")
         return
     qrels = read_qrels(folder, split)
@@ -545,7 +581,7 @@ def process_split(split, folder, canonical_ids, retriever, stemmer, assets,
     q_tok_str = bm25s.tokenize(q_texts, stopwords="en", stemmer=stemmer,
                                return_ids=False, show_progress=False)
 
-    rows = []
+    rows, curves = [], []
     for i, q in enumerate(tqdm(qids, desc=f"[dataset] features '{split}'")):
         rels = {d: int(g) for d, g in qrels[q].items() if int(g) > 0}
         if not rels:
@@ -555,7 +591,7 @@ def process_split(split, folder, canonical_ids, retriever, stemmer, assets,
         bm_docs = [canonical_ids[int(j)] for j in bm_r]
         dn_docs = [canonical_ids[int(j)] for j in dn_r]
 
-        a_star, nd = oracle_alpha(bm_docs, dn_docs, rels, N, alphas, eval_k)
+        curve, a_star, nd = alpha_ndcg_curve(bm_docs, dn_docs, rels, N, alphas, eval_k)
         if a_star is None:
             continue
 
@@ -580,16 +616,28 @@ def process_split(split, folder, canonical_ids, retriever, stemmer, assets,
             row.update(cross_retriever_features(bm_r, dn_r, s_bm, s_dn, base_bm, base_dn, eps,
                                                 int(cds.get("score_window_k", 100))))
 
-        # label + references
+        # label + references, plus curve-derived columns:
+        #   alpha_sensitivity = how much alpha matters for this query (max-min NDCG).
+        #     Use it as a SAMPLE WEIGHT: queries with a flat curve contribute
+        #     nothing to the end metric no matter what alpha is predicted.
+        #   plateau_frac = fraction of the alpha grid that is optimal -> how
+        #     ambiguous (tie-ridden) this query's label is.
         row.update({"alpha": a_star, "oracle_ndcg": nd,
                     "bm25_ndcg": ndcg_at_k(bm_docs, rels, eval_k) or 0.0,
                     "dense_ndcg": ndcg_at_k(dn_docs, rels, eval_k) or 0.0,
+                    "alpha_sensitivity": float(curve.max() - curve.min()),
+                    "plateau_frac": float(np.mean(curve >= curve.max() - 1e-6)),
                     "n_rel": len(rels), "eval_k": eval_k, "top_k": top_k})
         rows.append(row)
+        curves.append(curve)
 
     df = pd.DataFrame(rows)
     df.to_csv(out_csv, index=False)
+    if curves:
+        np.save(curve_path, np.stack(curves).astype(np.float32))   # (n_rows, |alphas|)
+        np.save(grid_path, np.asarray(alphas, dtype=np.float32))
     print(f"[dataset] wrote {out_csv}  ({len(df):,} rows x {df.shape[1]} cols)")
+    print(f"[dataset] wrote {curve_path}  ({len(curves):,} x {len(alphas)} alpha-NDCG curve)")
     del q_emb, dn_idx, dn_val, bm_idx, bm_val
     gc.collect()
 

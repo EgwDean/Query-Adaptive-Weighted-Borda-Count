@@ -65,6 +65,7 @@ paths:
   alpha_results_subdir: alpha_distribution  # data/results/alpha_distribution/
   bm25_tuning_subdir: bm25_tuning           # data/results/bm25_tuning/
   feature_dataset_subdir: feature_dataset   # data/results/feature_dataset/
+  router_screening_subdir: router_screening # data/results/router_screening/
 
 # ---- LEXICAL RETRIEVER: BM25 -----------------------------------------------
 # BM25 is the lexical representative. There is NO universal best k1/b -- it is
@@ -163,6 +164,28 @@ create_dataset:
     clarity: true              # Clarity Score per retriever (needs top-k doc text; capped by clarity_feedback_k)
     coherence: true            # autocorrelation + A-Pair-Ratio per retriever (embeddings, top-W)
     cross_retriever: true      # group D: Jaccard@k, Kendall's tau, z-score-normalised score-difference features
+
+# ---- ROUTER SCREENING (src/screen_routers.py) ------------------------------
+# Stage 1: for every (family, framing) pair run an INDEPENDENT Optuna/TPE study
+# over that family's hyperparameters. Fit on `train_subset` rows of the train
+# split, score each trial by mean NDCG@eval_k on dev (via the precomputed
+# alpha->NDCG curve). MSE/CE are logged as diagnostics only -- NEVER used to
+# select, because the alpha->NDCG curve is flat over wide plateaus.
+#
+# Per-family studies (rather than one BO over a mixed space) give every family
+# an identical trial budget, so the comparison is best-vs-best and fair.
+router_screen:
+  train_subset: 10000        # queries sampled from train for screening (seeded)
+  n_trials: 50               # Optuna trials PER (family, framing) study
+  bootstrap_resamples: 1000  # paired bootstrap over dev queries for the CIs
+  n_bins: 11                 # bins for the "multibin" framing (expected value over bin centres)
+  # Slow families are excluded on purpose: SVM is O(n^2)+ (dies at the 80k final
+  # fit) and KNN pays O(n_train) at INFERENCE, which defeats a ~1ms router.
+  families: [lightgbm, xgboost, catboost, hist_gbdt, random_forest, extra_trees, elasticnet, logreg, mlp]
+  # regression: predict alpha directly (clipped to [0,1])
+  # binary:     y = alpha > 0.5, use P(class=1) as alpha
+  # multibin:   discretise alpha into n_bins, alpha = sum(proba * bin_centres)
+  framings: [regression, binary, multibin]
 
 # ---- MISC ------------------------------------------------------------------
 seed: 42
