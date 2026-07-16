@@ -175,8 +175,8 @@ create_dataset:
 # Per-family studies (rather than one BO over a mixed space) give every family
 # an identical trial budget, so the comparison is best-vs-best and fair.
 router_screen:
-  train_subset: 500        # queries sampled from train for screening (seeded)
-  n_trials: 3           # Optuna trials PER (family, framing) study
+  train_subset: 10000        # queries sampled from train for screening (seeded)
+  n_trials: 50           # Optuna trials PER (family, framing) study
   bootstrap_resamples: 1000  # paired bootstrap over dev queries for the CIs
   n_bins: 11                 # bins for the "multibin" framing (expected value over bin centres)
   # Slow families are excluded on purpose: SVM is O(n^2)+ (dies at the 80k final
