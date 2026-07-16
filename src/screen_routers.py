@@ -284,6 +284,22 @@ def paired_bootstrap(a, b, n, seed):
     return float(d.mean()), lo, hi
 
 
+def pred_diagnostics(pred, alpha_true):
+    """DEGENERACY CHECK -- is the model actually routing, or just imitating a constant?
+
+    On hotpotqa the best constant alpha already scores ~0.645, so a model that
+    predicts ~0.99 for every query scores well while having learned nothing.
+    A near-zero `pred_alpha_std` (or a `pred_oracle_corr` near 0) reveals exactly
+    that. Returns (mean, std, pearson corr with the oracle alpha).
+    """
+    pred = np.clip(np.asarray(pred, dtype=np.float64), 0.0, 1.0)
+    if pred.std() < 1e-12 or np.std(alpha_true) < 1e-12:
+        corr = 0.0                       # constant prediction -> correlation undefined
+    else:
+        corr = float(np.corrcoef(pred, alpha_true)[0, 1])
+    return float(pred.mean()), float(pred.std()), corr
+
+
 # --------------------------------------------------------------------------- #
 def main():
     config = load_config()
@@ -315,19 +331,25 @@ def main():
     alpha_dev = dv_df["alpha"].to_numpy(dtype=np.float64)
     print(f"[screen] screening on {n_sub:,} train queries")
 
-    records, per_query = [], {}
+    records, per_query, diag = [], {}, {}
 
     # ---- reference rows (free from the curve; NOT the formal benchmark) ----
     a_star_idx = int(np.argmax(tr_curve_sub.mean(axis=0)))          # tuned on TRAIN only
     const_pq = dv_curve[:, a_star_idx]
     oracle_pq = dv_curve.max(axis=1)
-    for label, pq, extra in (("constant_alpha", const_pq, {"alpha_const": float(grid[a_star_idx])}),
-                             ("oracle", oracle_pq, {})):
+    const_pred = np.full(len(dv_df), float(grid[a_star_idx]))       # std 0 by construction
+    for label, pq, pred_ref, extra in (
+            ("constant_alpha", const_pq, const_pred, {"alpha_const": float(grid[a_star_idx])}),
+            ("oracle", oracle_pq, alpha_dev, {})):
         lo, hi = bootstrap_ci(pq, n_boot, seed)
+        pm, ps, pc = pred_diagnostics(pred_ref, alpha_dev)
         records.append(dict(family="reference", framing=label, params=json.dumps(extra),
                             dev_ndcg=float(pq.mean()), ci_lo=lo, ci_hi=hi,
-                            dev_mse=np.nan, dev_ce=np.nan, is_best=False))
+                            dev_mse=np.nan, dev_ce=np.nan,
+                            pred_alpha_mean=pm, pred_alpha_std=ps, pred_oracle_corr=pc,
+                            is_best=False))
         per_query[f"reference|{label}"] = pq
+        diag[f"reference|{label}"] = (pm, ps, pc)
     print(f"[screen] reference: constant alpha={grid[a_star_idx]:.2f} -> dev NDCG@{eval_k}="
           f"{const_pq.mean():.4f} | oracle={oracle_pq.mean():.4f}")
 
@@ -387,6 +409,8 @@ def main():
                 except Exception:
                     ce = np.nan
 
+            pm, ps, pc = pred_diagnostics(pred, alpha_dev)
+
             # log EVERY trial; then enrich the row belonging to the best trial
             # (matched by trial number -- the best is not necessarily the last).
             best_row = None
@@ -394,14 +418,19 @@ def main():
                 records.append(dict(family=family, framing=framing,
                                     params=json.dumps(t.params), dev_ndcg=float(t.value),
                                     ci_lo=np.nan, ci_hi=np.nan, dev_mse=np.nan, dev_ce=np.nan,
-                                    is_best=False))
+                                    pred_alpha_mean=np.nan, pred_alpha_std=np.nan,
+                                    pred_oracle_corr=np.nan, is_best=False))
                 if t.number == best.number:
                     best_row = records[-1]
             if best_row is not None:
-                best_row.update(ci_lo=lo, ci_hi=hi, dev_mse=mse, dev_ce=ce, is_best=True)
+                best_row.update(ci_lo=lo, ci_hi=hi, dev_mse=mse, dev_ce=ce, is_best=True,
+                                pred_alpha_mean=pm, pred_alpha_std=ps, pred_oracle_corr=pc)
             per_query[tag] = pq
+            diag[tag] = (pm, ps, pc)
+            flag = "  <-- DEGENERATE (predicts ~a constant)" if ps < 0.01 else ""
             print(f"[screen] {tag:28s} best dev NDCG@{eval_k}={best.value:.4f} "
-                  f"[{lo:.4f}, {hi:.4f}]  ({len(done)} trials)")
+                  f"[{lo:.4f}, {hi:.4f}]  pred_std={ps:.3f} corr={pc:+.3f} "
+                  f"({len(done)} trials){flag}")
 
     # ---- rank + paired bootstrap vs the best MODEL (references excluded) ----
     df = pd.DataFrame(records).sort_values("dev_ndcg", ascending=False).reset_index(drop=True)
@@ -413,9 +442,14 @@ def main():
     rows = []
     for tag, pq in per_query.items():
         d, lo, hi = paired_bootstrap(pq, per_query[top_tag], n_boot, seed)
+        pm, ps, pc = diag[tag]
         rows.append(dict(config=tag, dev_ndcg=float(pq.mean()), diff_vs_best=d,
                          diff_ci_lo=lo, diff_ci_hi=hi,
-                         significant=bool(lo > 0 or hi < 0)))
+                         significant=bool(lo > 0 or hi < 0),
+                         pred_alpha_mean=pm, pred_alpha_std=ps, pred_oracle_corr=pc,
+                         # a model whose predictions barely vary is just the
+                         # constant-alpha baseline in disguise
+                         degenerate=bool(ps < 0.01)))
     cmp_df = pd.DataFrame(rows).sort_values("dev_ndcg", ascending=False).reset_index(drop=True)
 
     out_csv = os.path.join(paths["router_screening"], f"{name}_router_screening.csv")
@@ -434,6 +468,11 @@ def main():
     print(cmp_df.to_string(index=False))
     print(f"\n[screen] BEST -> {top.family} / {top.framing}  dev NDCG@{eval_k}={top.dev_ndcg:.4f}")
     print("[screen] 'significant' = paired-bootstrap 95% CI of the difference excludes 0.")
+    print("[screen] 'degenerate'  = pred_alpha_std < 0.01: the model predicts ~a constant,")
+    print("[screen]                 so it scores like the constant baseline without routing.")
+    if bool(cmp_df.iloc[0]["degenerate"]):
+        print("\n[screen] WARNING: the top config is DEGENERATE -- it imitates the constant\n"
+              "[screen]          baseline rather than routing. Treat its score as a constant.")
 
 
 if __name__ == "__main__":

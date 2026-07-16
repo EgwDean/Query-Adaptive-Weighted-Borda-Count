@@ -67,6 +67,7 @@ carry forward.
 │   ├── ltr_router_features.md      # Phase-2 router feature catalogue (QPP + routing)
 │   ├── inference_feature_inventory.md # which features are usable at inference time
 │   ├── feature_dataset.md          # final feature dataset dict + project history
+│   ├── router_pipeline.md          # Phase-2 router training pipeline (stages 1-5)
 │   ├── comparison_methods.md       # baselines & methods to compare against
 │   └── bm25_parameter_history.md   # BM25 params / metric changes per results run
 ├── src/
@@ -76,6 +77,7 @@ carry forward.
 │   ├── alpha_distribution.py# BM25 + dense + oracle alpha + boxplots
 │   ├── tune_bm25.py         # grid-search BM25 k1/b/stemming by NDCG@eval_k
 │   ├── create_dataset.py    # Phase-2 feature dataset (per-split, features + oracle alpha)
+│   ├── screen_routers.py    # Phase-2 stage 1: screen model families x framings (Optuna)
 │   └── dataset_pipeline.py  # run download -> embed -> alpha_distribution
 └── data/
     ├── datasets/<name>/        # raw BEIR corpus, queries, qrels
@@ -184,14 +186,48 @@ spread** and which has the **median closest to 0.5**.
 * [docs/feature_dataset.md](docs/feature_dataset.md) — data dictionary for the
   feature dataset `create_dataset.py` produces (every column + how computed),
   plus a narrative of the whole project so far.
+* [docs/router_pipeline.md](docs/router_pipeline.md) — the Phase-2 router
+  training pipeline: family/framing screening, the three governing rules
+  (select on NDCG, split discipline, scalers inside the pipeline), sample
+  weighting, and the degeneracy check.
 
 ---
 
 ## Roadmap
 
-* **Phase 1 (this repo):** choose the most lexical+semantic-balanced dataset.
-* **Phase 2:** learning-to-rank features
-  ([docs/ltr_router_features.md](docs/ltr_router_features.md)) + a router that
-  predicts `alpha` per query; compare Weighted Borda Count against a
-  **globally-tuned static** weight and against the best single retriever
-  ([docs/comparison_methods.md](docs/comparison_methods.md)).
+Living status of the project. **Chosen dataset: `hotpotqa`** (highest oracle-alpha
+spread in Phase 1). Primary metric: **NDCG@10**; candidate pool `top_k=1000`.
+
+### Phase 1 — dataset selection ✅ done
+| Step | Script | Output |
+|---|---|---|
+| Download a BEIR dataset | `src/download.py` | `data/datasets/<ds>/` |
+| Embed corpus + queries | `src/embed.py` | `data/processed_data/<ds>/corpus_emb.npy` |
+| Oracle-alpha distribution | `src/alpha_distribution.py` | `data/results/alpha_distribution/` |
+| Tune BM25 per corpus | `src/tune_bm25.py` | `data/results/bm25_tuning/` |
+
+Ran across 14 BEIR datasets → `hotpotqa` chosen. BM25 tuned to `k1=0.8, b=0.4`.
+History of metric/parameter changes: [docs/bm25_parameter_history.md](docs/bm25_parameter_history.md).
+
+### Phase 2 — the router 🔜 in progress
+| # | Step | Script | Status |
+|---|---|---|---|
+| 0 | Feature dataset + alpha→NDCG curve (per split) | `src/create_dataset.py` | ✅ done |
+| 1 | Screen model families × framings (Optuna, per family) | `src/screen_routers.py` | ✅ ready to run |
+| 2 | Feature ablation using the stage-1 winner | *(planned)* | ⬜ |
+| 3 | Re-screen families + params on the ablated features | *(planned)* | ⬜ |
+| 4 | Final fit on the full train split (~85k) | *(planned)* | ⬜ |
+| 5 | Benchmark vs all baselines + SHAP | *(planned)* | ⬜ |
+
+Design: [docs/router_pipeline.md](docs/router_pipeline.md) ·
+features: [docs/feature_dataset.md](docs/feature_dataset.md) ·
+baselines: [docs/comparison_methods.md](docs/comparison_methods.md).
+
+### The bar (hotpotqa, NDCG@10)
+```
+pure dense  (alpha=0.00)   0.3929
+pure BM25   (alpha=1.00)   0.6300
+best static (alpha=0.99)   0.6451   <- what the router must beat
+oracle      (per-query)    0.7364   <- ceiling
+headroom                   0.0913   (+14.2% relative)
+```
