@@ -112,6 +112,7 @@ dense:
   embedding_dtype: float32 # cached embedding storage: float32 (full precision) or float16 (half RAM/disk)
   encode_shard_size: 100000  # docs encoded per shard, streamed to the memmap (caps host RAM)
   retrieval_chunk_size: 50000 # corpus rows scored per GPU block in dense retrieval (caps VRAM)
+  query_batch_size: 2048      # queries scored per batch; VRAM for the similarity block ~= query_batch_size * retrieval_chunk_size * 4 bytes (lower both if CUDA OOM)
 
 # ---- RETRIEVAL DEPTH -------------------------------------------------------
 # top_k    = candidate pool depth per retriever, AND the Weighted Borda list

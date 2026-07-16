@@ -95,11 +95,15 @@ def build_corpus_assets(paths, name, doc_texts, bm25_conf, keep_token_ids):
     """Build (or load) term stats + inverted index + centroid. Also returns the
     fitted bm25s retriever and the vocab. `keep_token_ids` keeps per-doc token
     ids in RAM (needed only for Clarity Score)."""
+    # Cache is keyed by the stemming setting: stemming changes the tokenisation,
+    # hence the vocab ids -- reusing a cache built with the other setting would
+    # silently misalign the term-doc matrix against the fresh vocab.
+    stem_tag = "stem" if bm25_conf.get("use_stemming", False) else "nostem"
     adir = os.path.join(processed_dir(paths, name), "assets")
     os.makedirs(adir, exist_ok=True)
-    npz_path = os.path.join(adir, "termdoc.npz")
-    stat_path = os.path.join(adir, "termstats.npz")
-    vocab_path = os.path.join(adir, "vocab.json")
+    npz_path = os.path.join(adir, f"termdoc_{stem_tag}.npz")
+    stat_path = os.path.join(adir, f"termstats_{stem_tag}.npz")
+    vocab_path = os.path.join(adir, f"vocab_{stem_tag}.json")
 
     stemmer = None
     if bm25_conf.get("use_stemming", False) and Stemmer is not None:
@@ -171,7 +175,9 @@ def build_corpus_assets(paths, name, doc_texts, bm25_conf, keep_token_ids):
     assets = dict(M=M, df=df, cf=cf, idf=idf, var_t=var_t, vocab=vocab,
                   tokens_coll=tokens_coll, n_doc=n_doc, avgdl=avgdl,
                   centroid=centroid, corpus_emb=corpus_emb,
-                  token_ids=(ids if keep_token_ids else None))
+                  token_ids=(ids if keep_token_ids else None),
+                  # reusable scratch bitmap for query_scope / PMI (n_doc bools, ~5 MB)
+                  _buf=np.zeros(n_doc, dtype=bool))
     return retriever, stemmer, assets
 
 
@@ -250,28 +256,40 @@ def _postings(t, M):
 
 
 def _query_scope(term_ids, assets):
+    """omega = -log(n_Q/N). Uses a reusable boolean bitmap to count the union of
+    posting lists in O(total postings) -- concatenate+np.unique would sort, which
+    on a multi-million-doc corpus costs ~1000x more per query."""
     if not term_ids:
         return 0.0
-    M, N = assets["M"], assets["n_doc"]
-    union = np.unique(np.concatenate([_postings(t, M) for t in term_ids])) if term_ids else np.array([])
-    n_q = max(len(union), 1)
-    return float(-math.log(n_q / N))
+    M, N, buf = assets["M"], assets["n_doc"], assets["_buf"]
+    n_q = 0
+    for t in term_ids:
+        p = _postings(t, M)
+        n_q += int(np.count_nonzero(~buf[p]))      # only docs not already counted
+        buf[p] = True
+    for t in term_ids:                             # reset the scratch bitmap
+        buf[_postings(t, M)] = False
+    return float(-math.log(max(n_q, 1) / N))
 
 
 def _pmi_avg(term_ids, assets, eps):
+    """Mean pairwise PMI. Co-occurrence counts come from bitmap lookups
+    (O(|p_i|+|p_j|) per pair) instead of np.intersect1d, which sorts both
+    posting lists and dominates runtime on large corpora."""
     uniq = list(dict.fromkeys(term_ids))
     if len(uniq) < 2:
         return 0.0
-    M, N = assets["M"], assets["n_doc"]
-    df = assets["df"]
+    M, N, df, buf = assets["M"], assets["n_doc"], assets["df"], assets["_buf"]
     vals = []
     for i in range(len(uniq)):
+        pi = _postings(uniq[i], M)
+        buf[pi] = True
         for j in range(i + 1, len(uniq)):
-            ti, tj = uniq[i], uniq[j]
-            co = np.intersect1d(_postings(ti, M), _postings(tj, M), assume_unique=False).size
+            co = int(np.count_nonzero(buf[_postings(uniq[j], M)]))
             p_ij = (co + eps) / N
-            p_i, p_j = (df[ti] + eps) / N, (df[tj] + eps) / N
+            p_i, p_j = (df[uniq[i]] + eps) / N, (df[uniq[j]] + eps) / N
             vals.append(math.log(p_ij / (p_i * p_j)))
+        buf[pi] = False                            # reset before the next term
     return float(np.mean(vals)) if vals else 0.0
 
 
@@ -422,24 +440,32 @@ def dense_retrieve_scores(q_emb, corpus_emb, top_k, dev, dtype, chunk, qbatch=20
     bytes_per = 2 if dtype == torch.float16 else 4
     Cgpu = None
     if dev == "cuda" and n_doc * dim * bytes_per < 18e9:        # fits comfortably in 24 GB
-        # np.array() forces a writable RAM copy (memmap slices are read-only,
-        # which otherwise triggers a torch "non-writable tensor" warning).
-        Cgpu = torch.from_numpy(np.array(corpus_emb[:])).to(dev).to(dtype)
+        try:
+            # np.array() forces a writable RAM copy (memmap slices are read-only,
+            # which otherwise triggers a torch "non-writable tensor" warning).
+            Cgpu = torch.from_numpy(np.array(corpus_emb[:])).to(dev).to(dtype)
+        except torch.cuda.OutOfMemoryError:
+            # Shared GPU: another process may hold VRAM. Fall back to streaming
+            # the corpus from the memmap per chunk (slower, but always fits).
+            print("[dataset] corpus preload OOM -- falling back to chunked streaming")
+            Cgpu = None
+            torch.cuda.empty_cache()
 
+    # The similarity matrix is ALWAYS chunked over the corpus dimension, even when
+    # the corpus is preloaded on the GPU: `Q @ Cgpu.T` over the full corpus would
+    # be (qbatch x n_doc) -- ~40 GB for 2048 queries x 5.2M docs. Chunking caps it
+    # at (qbatch x chunk). Preloading only avoids re-reading the corpus per batch.
     for qs in tqdm(range(0, nq, qbatch), desc="[dataset] dense retrieve"):
         qe = min(qs + qbatch, nq)
         Q = torch.from_numpy(np.ascontiguousarray(q_emb[qs:qe])).to(dev).to(dtype)
-        if Cgpu is not None:
-            sims = Q @ Cgpu.T
-            vals, idx = torch.topk(sims, k, dim=1)
-            out_idx[qs:qe], out_val[qs:qe] = idx.cpu().numpy(), vals.float().cpu().numpy()
-            del sims, vals, idx
-            continue
         run_v = run_i = None
         for start in range(0, n_doc, chunk):
             end = min(start + chunk, n_doc)
-            block = torch.from_numpy(np.array(corpus_emb[start:end])).to(dev).to(dtype)
-            sims = Q @ block.T
+            if Cgpu is not None:
+                block = Cgpu[start:end]                    # GPU view: no host transfer
+            else:
+                block = torch.from_numpy(np.array(corpus_emb[start:end])).to(dev).to(dtype)
+            sims = Q @ block.T                             # (qbatch x chunk) -- bounded
             kk = min(k, end - start)
             vals, idx = torch.topk(sims, kk, dim=1)
             idx = idx + start
@@ -449,8 +475,11 @@ def dense_retrieve_scores(q_emb, corpus_emb, top_k, dev, dtype, chunk, qbatch=20
                 run_v = torch.cat([run_v, vals], 1); run_i = torch.cat([run_i, idx], 1)
                 vals, sel = torch.topk(run_v, min(k, run_v.shape[1]), 1)
                 run_v, run_i = vals, torch.gather(run_i, 1, sel)
-            del block, sims
+            del sims
+            if Cgpu is None:
+                del block
         out_idx[qs:qe], out_val[qs:qe] = run_i.cpu().numpy(), run_v.float().cpu().numpy()
+        del Q, run_v, run_i
     del Cgpu
     return out_idx, out_val
 
@@ -504,7 +533,8 @@ def process_split(split, folder, canonical_ids, retriever, stemmer, assets,
                          show_progress_bar=True, normalize_embeddings=True,
                          convert_to_numpy=True).astype(np.float32)
     dn_idx, dn_val = dense_retrieve_scores(q_emb, assets["corpus_emb"], top_k, dev, dtype,
-                                           int(config["dense"].get("retrieval_chunk_size", 50000)))
+                                           int(config["dense"].get("retrieval_chunk_size", 50000)),
+                                           int(config["dense"].get("query_batch_size", 2048)))
 
     # bm25: tokenise queries (strings) and retrieve with scores
     q_tokens = bm25s.tokenize(q_texts, stopwords="en", stemmer=stemmer, show_progress=False)
