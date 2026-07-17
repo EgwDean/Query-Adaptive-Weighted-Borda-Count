@@ -179,6 +179,18 @@ router_screen:
   n_trials: 50           # Optuna trials PER (family, framing) study
   bootstrap_resamples: 1000  # paired bootstrap over dev queries for the CIs
   n_bins: 11                 # bins for the "multibin" framing (expected value over bin centres)
+  # DECISION RULE -- how the model's output becomes an alpha. Searched per trial.
+  #   raw        = use the model's output directly as alpha (its output is a
+  #                proxy/probability, not a fusion weight -- this is what loses
+  #                to the constant baseline).
+  #   calibrated = histogram binning: the output is only a SCORE used to bin
+  #                queries; each bin emits the alpha maximising ITS average
+  #                NDCG curve, learned on a held-out slice of train. Floor =
+  #                the constant baseline (no signal -> every bin picks the same
+  #                alpha), so it cannot do worse.
+  decision_rules: [raw, calibrated]
+  calib_fraction: 0.2        # share of train_subset held out to FIT the calibration table
+  n_calib_bins: [10, 20, 50] # number of quantile bins (searched; calibrated rule only)
   # Slow families are excluded on purpose: SVM is O(n^2)+ (dies at the 80k final
   # fit) and KNN pays O(n_train) at INFERENCE, which defeats a ~1ms router.
   families: [lightgbm, xgboost, catboost, hist_gbdt, random_forest, extra_trees, elasticnet, logreg, mlp]

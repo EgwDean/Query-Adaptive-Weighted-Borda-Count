@@ -250,21 +250,82 @@ def build_estimator(trial, family, framing, seed):
 # --------------------------------------------------------------------------- #
 # Fit / evaluate one configuration
 # --------------------------------------------------------------------------- #
-def fit_predict(est, family, use_w, Xtr, ytr, wtr, Xdev, framing, bins):
+def _fit(est, family, use_w, X, y, w):
     if family in SCALE_SENSITIVE:
         pipe = Pipeline([("scaler", est[0]), ("model", est[1])])
         if use_w:
-            pipe.fit(Xtr, ytr, model__sample_weight=wtr)
+            pipe.fit(X, y, model__sample_weight=w)
         else:
-            pipe.fit(Xtr, ytr)
-        model = pipe
+            pipe.fit(X, y)
+        return pipe
+    if use_w:
+        est.fit(X, y, sample_weight=w)
     else:
-        model = est
-        if use_w:
-            model.fit(Xtr, ytr, sample_weight=wtr)
-        else:
-            model.fit(Xtr, ytr)
-    return model, predict_alpha(model, Xdev, framing, bins)
+        est.fit(X, y)
+    return est
+
+
+# --------------------------------------------------------------------------- #
+# Decision rule: raw output vs histogram-binned calibration
+# --------------------------------------------------------------------------- #
+def fit_calibration(scores, curve, grid, n_bins):
+    """HISTOGRAM BINNING (Zadrozny & Elkan-style) of the model score -> alpha.
+
+    Cut the calibration scores into quantile bins; each bin stores the alpha that
+    maximises the AVERAGE NDCG curve of the queries in that bin:
+        bin_alpha = grid[ curve[rows_in_bin].mean(axis=0).argmax() ]
+    i.e. for each of the 101 alphas, average that column over the bin's queries,
+    and keep the position of the largest.
+
+    The bin index constrains nothing: every bin searches the full alpha grid. If
+    the model carries no signal, every bin's average curve equals the global
+    curve, so every bin stores the same alpha -> exactly the constant baseline.
+    That is the floor this rule cannot fall below.
+    """
+    edges = np.quantile(scores, np.linspace(0.0, 1.0, n_bins + 1))
+    inner = np.unique(edges[1:-1])            # ties collapse -> fewer, wider bins
+    idx = np.digitize(scores, inner)
+    n_eff = len(inner) + 1
+    global_alpha = grid[int(curve.mean(axis=0).argmax())]
+    bin_alpha = np.full(n_eff, global_alpha)  # empty bin -> global best alpha
+    for b in range(n_eff):
+        m = idx == b
+        if m.sum() > 0:
+            bin_alpha[b] = grid[int(curve[m].mean(axis=0).argmax())]
+    return inner, bin_alpha
+
+
+def apply_calibration(scores, inner_edges, bin_alpha):
+    return bin_alpha[np.digitize(scores, inner_edges)]
+
+
+def run_config(est, family, framing, use_w, decision, n_cal_bins,
+               Xtr, ytr, wtr, tr_curve, Xdev, bins, grid, seed, calib_frac):
+    """Fit and produce the dev alphas under the chosen decision rule.
+
+    raw        -- the model's output IS used as alpha (loses to the constant:
+                  the output is a proxy/probability, not a fusion weight).
+    calibrated -- the model's output is only a SCORE used to bin queries; each
+                  bin emits the alpha maximising its average NDCG curve, learned
+                  on a HELD-OUT slice of the train subset (never on the rows the
+                  model was fit on, whose scores are overfit and would not
+                  transfer).
+    """
+    if decision == "raw":
+        model = _fit(est, family, use_w, Xtr, ytr, wtr)
+        return model, predict_alpha(model, Xdev, framing, bins), None
+
+    n = len(Xtr)
+    perm = np.random.default_rng(seed).permutation(n)
+    n_cal = min(max(int(calib_frac * n), n_cal_bins * 10), n - n_cal_bins * 10)
+    cal_i, fit_i = perm[:n_cal], perm[n_cal:]
+    if framing != "regression" and len(np.unique(ytr[fit_i])) < 2:
+        raise ValueError("degenerate fit split: one class only")
+    model = _fit(est, family, use_w, Xtr[fit_i], ytr[fit_i], wtr[fit_i])
+    s_cal = predict_alpha(model, Xtr[cal_i], framing, bins)         # honest scores
+    edges, bin_alpha = fit_calibration(s_cal, tr_curve[cal_i], grid, n_cal_bins)
+    s_dev = predict_alpha(model, Xdev, framing, bins)
+    return model, apply_calibration(s_dev, edges, bin_alpha), (edges, bin_alpha)
 
 
 def bootstrap_ci(x, n, seed):
@@ -310,6 +371,9 @@ def main():
     eval_k = config["retrieval"].get("eval_k", 10)
     bins = np.linspace(0.0, 1.0, int(rs.get("n_bins", 11)))
     n_boot = int(rs.get("bootstrap_resamples", 1000))
+    decision_rules = list(rs.get("decision_rules", ["raw", "calibrated"]))
+    calib_bin_opts = list(rs.get("n_calib_bins", [10, 20, 50]))
+    calib_frac = float(rs.get("calib_fraction", 0.2))
 
     grid = np.load(os.path.join(paths["feature_dataset"], f"{name}_alpha_grid.npy")).astype(np.float64)
     tr_df, tr_curve = load_split(paths, name, "train")
@@ -331,7 +395,7 @@ def main():
     alpha_dev = dv_df["alpha"].to_numpy(dtype=np.float64)
     print(f"[screen] screening on {n_sub:,} train queries")
 
-    records, per_query, diag = [], {}, {}
+    records, per_query, diag, rule_of = [], {}, {}, {}
 
     # ---- reference rows (free from the curve; NOT the formal benchmark) ----
     a_star_idx = int(np.argmax(tr_curve_sub.mean(axis=0)))          # tuned on TRAIN only
@@ -375,8 +439,13 @@ def main():
                          trial.suggest_categorical("use_sample_weight", [True, False]))
                 if family in SCALE_SENSITIVE:
                     est = (_scaler(trial), est)
+                decision = trial.suggest_categorical("decision_rule", decision_rules)
+                n_cb = (trial.suggest_categorical("n_calib_bins", calib_bin_opts)
+                        if decision == "calibrated" else 0)
                 try:
-                    _, pred = fit_predict(est, family, use_w, Xtr, ytr, wtr, Xdev, framing, bins)
+                    _, pred, _ = run_config(est, family, framing, use_w, decision, n_cb,
+                                            Xtr, ytr, wtr, tr_curve_sub, Xdev, bins, grid,
+                                            seed, calib_frac)
                 except Exception:
                     raise optuna.TrialPruned()
                 return float(ndcg_of_alpha(pred, dv_curve, grid).mean())
@@ -395,7 +464,11 @@ def main():
             use_w = bool(best.params.get("use_sample_weight", False))
             if family in SCALE_SENSITIVE:
                 est = (_scaler(optuna.trial.FixedTrial(best.params)), est)
-            model, pred = fit_predict(est, family, use_w, Xtr, ytr, wtr, Xdev, framing, bins)
+            decision = best.params.get("decision_rule", "raw")
+            n_cb = int(best.params.get("n_calib_bins", 0))
+            model, pred, _ = run_config(est, family, framing, use_w, decision, n_cb,
+                                        Xtr, ytr, wtr, tr_curve_sub, Xdev, bins, grid,
+                                        seed, calib_frac)
             pq = ndcg_of_alpha(pred, dv_curve, grid)
             lo, hi = bootstrap_ci(pq, n_boot, seed)
 
@@ -428,9 +501,11 @@ def main():
             per_query[tag] = pq
             diag[tag] = (pm, ps, pc)
             flag = "  <-- DEGENERATE (predicts ~a constant)" if ps < 0.01 else ""
+            dtxt = decision if decision == "raw" else f"calib[{n_cb}]"
+            rule_of[tag] = dtxt
             print(f"[screen] {tag:28s} best dev NDCG@{eval_k}={best.value:.4f} "
-                  f"[{lo:.4f}, {hi:.4f}]  pred_std={ps:.3f} corr={pc:+.3f} "
-                  f"({len(done)} trials){flag}")
+                  f"[{lo:.4f}, {hi:.4f}]  rule={dtxt:10s} pred_std={ps:.3f} "
+                  f"corr={pc:+.3f} ({len(done)} trials){flag}")
 
     # ---- rank + paired bootstrap vs the best MODEL (references excluded) ----
     df = pd.DataFrame(records).sort_values("dev_ndcg", ascending=False).reset_index(drop=True)
@@ -443,7 +518,8 @@ def main():
     for tag, pq in per_query.items():
         d, lo, hi = paired_bootstrap(pq, per_query[top_tag], n_boot, seed)
         pm, ps, pc = diag[tag]
-        rows.append(dict(config=tag, dev_ndcg=float(pq.mean()), diff_vs_best=d,
+        rows.append(dict(config=tag, rule=rule_of.get(tag, "-"),
+                         dev_ndcg=float(pq.mean()), diff_vs_best=d,
                          diff_ci_lo=lo, diff_ci_hi=hi,
                          significant=bool(lo > 0 or hi < 0),
                          pred_alpha_mean=pm, pred_alpha_std=ps, pred_oracle_corr=pc,

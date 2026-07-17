@@ -213,7 +213,7 @@ History of metric/parameter changes: [docs/bm25_parameter_history.md](docs/bm25_
 | # | Step | Script | Status |
 |---|---|---|---|
 | 0 | Feature dataset + alpha→NDCG curve (per split) | `src/create_dataset.py` | ✅ done |
-| 1 | Screen model families × framings (Optuna, per family) | `src/screen_routers.py` | ✅ ready to run |
+| 1 | Screen model families × framings (Optuna, per family) + decision rule | `src/screen_routers.py` | 🔄 re-running with calibration |
 | 2 | Feature ablation using the stage-1 winner | *(planned)* | ⬜ |
 | 3 | Re-screen families + params on the ablated features | *(planned)* | ⬜ |
 | 4 | Final fit on the full train split (~85k) | *(planned)* | ⬜ |
