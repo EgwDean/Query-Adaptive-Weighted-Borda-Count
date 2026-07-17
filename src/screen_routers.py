@@ -30,7 +30,18 @@ Outputs (results/router_screening/):
 import os
 import sys
 import json
+import time
 import warnings
+
+# Cap thread pools BEFORE importing numpy / sklearn / boosters. On this shared
+# 32-core box, n_jobs=-1 (=32) oversubscribes and HANGS (profiled: 8 threads
+# = 2.0s/fit, 32 = stalls). These env vars bound the BLAS/OpenMP pools that
+# hist_gbdt and mlp use (they take no n_jobs arg); N_THREADS also feeds the
+# n_jobs / thread_count of the families that do. Must precede numpy import.
+N_THREADS = int(os.environ.get("SCREEN_THREADS", "8"))
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+           "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_v, str(N_THREADS))
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -153,14 +164,20 @@ def family_available(family, framing):
     return True
 
 
-def build_estimator(trial, family, framing, seed):
-    """Return an estimator for this trial, or None if the family/framing is unavailable."""
+def build_estimator(trial, family, framing, seed, n_jobs=N_THREADS, max_rounds=600):
+    """Return an estimator for this trial, or None if the family/framing is unavailable.
+
+    `n_jobs` bounds thread pools (never -1 -> that hangs on this box); `max_rounds`
+    caps the boosting-round / tree-count ranges. Screening only needs to RANK
+    families, so the upper bound is deliberately modest here -- the big search
+    happens at the final-fit stage.
+    """
     is_reg = framing == "regression"
 
     if family == "lightgbm":
         if LGBMRegressor is None:
             return None
-        p = dict(n_estimators=trial.suggest_int("n_estimators", 100, 1500, log=True),
+        p = dict(n_estimators=trial.suggest_int("n_estimators", 100, max_rounds, log=True),
                  learning_rate=trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
                  num_leaves=trial.suggest_int("num_leaves", 15, 255, log=True),
                  min_child_samples=trial.suggest_int("min_child_samples", 5, 100),
@@ -169,13 +186,13 @@ def build_estimator(trial, family, framing, seed):
                  colsample_bytree=trial.suggest_float("colsample_bytree", 0.5, 1.0),
                  reg_alpha=trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
                  reg_lambda=trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
-                 n_jobs=-1, random_state=seed, verbose=-1)
+                 n_jobs=n_jobs, random_state=seed, verbose=-1)
         return LGBMRegressor(**p) if is_reg else LGBMClassifier(**p)
 
     if family == "xgboost":
         if XGBRegressor is None:
             return None
-        p = dict(n_estimators=trial.suggest_int("n_estimators", 100, 1500, log=True),
+        p = dict(n_estimators=trial.suggest_int("n_estimators", 100, max_rounds, log=True),
                  learning_rate=trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
                  max_depth=trial.suggest_int("max_depth", 3, 12),
                  min_child_weight=trial.suggest_float("min_child_weight", 1.0, 20.0, log=True),
@@ -184,34 +201,34 @@ def build_estimator(trial, family, framing, seed):
                  gamma=trial.suggest_float("gamma", 1e-8, 5.0, log=True),
                  reg_alpha=trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
                  reg_lambda=trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
-                 n_jobs=-1, random_state=seed, tree_method="hist", verbosity=0)
+                 n_jobs=n_jobs, random_state=seed, tree_method="hist", verbosity=0)
         return XGBRegressor(**p) if is_reg else XGBClassifier(**p)
 
     if family == "catboost":
         if CatBoostRegressor is None:
             return None
-        p = dict(iterations=trial.suggest_int("iterations", 100, 1500, log=True),
+        p = dict(iterations=trial.suggest_int("iterations", 100, max_rounds, log=True),
                  learning_rate=trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
                  depth=trial.suggest_int("depth", 4, 10),
                  l2_leaf_reg=trial.suggest_float("l2_leaf_reg", 1.0, 30.0, log=True),
-                 random_seed=seed, verbose=0, allow_writing_files=False)
+                 thread_count=n_jobs, random_seed=seed, verbose=0, allow_writing_files=False)
         return CatBoostRegressor(**p) if is_reg else CatBoostClassifier(**p)
 
-    if family == "hist_gbdt":
-        p = dict(max_iter=trial.suggest_int("max_iter", 100, 1000, log=True),
+    if family == "hist_gbdt":                        # threads bounded by OMP env cap
+        p = dict(max_iter=trial.suggest_int("max_iter", 100, max_rounds, log=True),
                  learning_rate=trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
                  max_leaf_nodes=trial.suggest_int("max_leaf_nodes", 15, 255, log=True),
                  min_samples_leaf=trial.suggest_int("min_samples_leaf", 5, 100),
                  l2_regularization=trial.suggest_float("l2_regularization", 1e-8, 10.0, log=True),
-                 random_state=seed)
+                 early_stopping=False, random_state=seed)
         return HistGradientBoostingRegressor(**p) if is_reg else HistGradientBoostingClassifier(**p)
 
     if family in ("random_forest", "extra_trees"):
-        p = dict(n_estimators=trial.suggest_int("n_estimators", 100, 800, log=True),
+        p = dict(n_estimators=trial.suggest_int("n_estimators", 100, max_rounds, log=True),
                  max_depth=trial.suggest_int("max_depth", 5, 30),
                  min_samples_leaf=trial.suggest_int("min_samples_leaf", 1, 20),
                  max_features=trial.suggest_float("max_features", 0.2, 1.0),
-                 n_jobs=-1, random_state=seed)
+                 n_jobs=n_jobs, random_state=seed)
         if family == "random_forest":
             return RandomForestRegressor(**p) if is_reg else RandomForestClassifier(**p)
         return ExtraTreesRegressor(**p) if is_reg else ExtraTreesClassifier(**p)
@@ -228,7 +245,7 @@ def build_estimator(trial, family, framing, seed):
             return None
         penalty = trial.suggest_categorical("penalty", ["l2", "l1", "elasticnet"])
         p = dict(C=trial.suggest_float("C", 1e-4, 100.0, log=True),
-                 penalty=penalty, solver="saga", max_iter=3000, n_jobs=-1,
+                 penalty=penalty, solver="saga", max_iter=3000, n_jobs=n_jobs,
                  random_state=seed)
         if penalty == "elasticnet":
             p["l1_ratio"] = trial.suggest_float("l1_ratio", 0.0, 1.0)
@@ -374,6 +391,9 @@ def main():
     decision_rules = list(rs.get("decision_rules", ["raw", "calibrated"]))
     calib_bin_opts = list(rs.get("n_calib_bins", [10, 20, 50]))
     calib_frac = float(rs.get("calib_fraction", 0.2))
+    n_jobs = int(rs.get("n_jobs", N_THREADS))
+    max_rounds = int(rs.get("max_boost_rounds", 600))
+    print(f"[screen] threads/job={n_jobs} (env cap {N_THREADS}) | max_boost_rounds={max_rounds}")
 
     grid = np.load(os.path.join(paths["feature_dataset"], f"{name}_alpha_grid.npy")).astype(np.float64)
     tr_df, tr_curve = load_split(paths, name, "train")
@@ -432,7 +452,7 @@ def main():
                 continue
 
             def objective(trial):
-                est = build_estimator(trial, family, framing, seed)
+                est = build_estimator(trial, family, framing, seed, n_jobs, max_rounds)
                 if est is None:
                     raise optuna.TrialPruned()
                 use_w = (family not in NO_SAMPLE_WEIGHT and
@@ -450,17 +470,20 @@ def main():
                     raise optuna.TrialPruned()
                 return float(ndcg_of_alpha(pred, dv_curve, grid).mean())
 
+            t_study = time.perf_counter()
             study = optuna.create_study(direction="maximize",
                                         sampler=optuna.samplers.TPESampler(seed=seed))
             study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+            study_secs = time.perf_counter() - t_study
             done = [t for t in study.trials if t.value is not None]
             if not done:
-                print(f"[screen] {tag}: all trials pruned -- skipped.")
+                print(f"[screen] {tag}: all trials pruned in {study_secs:.0f}s -- skipped.")
                 continue
 
             # refit the best trial to capture per-query dev NDCG + diagnostics
             best = study.best_trial
-            est = build_estimator(optuna.trial.FixedTrial(best.params), family, framing, seed)
+            est = build_estimator(optuna.trial.FixedTrial(best.params), family, framing, seed,
+                                  n_jobs, max_rounds)
             use_w = bool(best.params.get("use_sample_weight", False))
             if family in SCALE_SENSITIVE:
                 est = (_scaler(optuna.trial.FixedTrial(best.params)), est)
@@ -505,7 +528,7 @@ def main():
             rule_of[tag] = dtxt
             print(f"[screen] {tag:28s} best dev NDCG@{eval_k}={best.value:.4f} "
                   f"[{lo:.4f}, {hi:.4f}]  rule={dtxt:10s} pred_std={ps:.3f} "
-                  f"corr={pc:+.3f} ({len(done)} trials){flag}")
+                  f"corr={pc:+.3f} ({len(done)} trials, {study_secs:.0f}s){flag}")
 
     # ---- rank + paired bootstrap vs the best MODEL (references excluded) ----
     df = pd.DataFrame(records).sort_values("dev_ndcg", ascending=False).reset_index(drop=True)

@@ -176,7 +176,14 @@ create_dataset:
 # an identical trial budget, so the comparison is best-vs-best and fair.
 router_screen:
   train_subset: 10000        # queries sampled from train for screening (seeded)
-  n_trials: 50           # Optuna trials PER (family, framing) study
+  n_trials: 1           # Optuna trials PER (family, framing) study
+  # Threads per fit. NEVER use -1/32 on this box: profiled n_jobs=8 -> 2.0s/fit,
+  # 32 -> HANGS (oversubscription). 8 is the sweet spot; SCREEN_THREADS env var
+  # also caps BLAS/OpenMP before numpy imports (hist_gbdt/mlp take no n_jobs).
+  n_jobs: 8
+  # Cap on boosting rounds / tree count DURING SCREENING (screening only ranks
+  # families; the big search happens at the final-fit stage). Was 1500 -> 600.
+  max_boost_rounds: 600
   bootstrap_resamples: 1000  # paired bootstrap over dev queries for the CIs
   n_bins: 11                 # bins for the "multibin" framing (expected value over bin centres)
   # DECISION RULE -- how the model's output becomes an alpha. Searched per trial.
