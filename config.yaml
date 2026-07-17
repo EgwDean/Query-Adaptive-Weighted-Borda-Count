@@ -176,7 +176,7 @@ create_dataset:
 # an identical trial budget, so the comparison is best-vs-best and fair.
 router_screen:
   train_subset: 10000        # queries sampled from train for screening (seeded)
-  n_trials: 1           # Optuna trials PER (family, framing) study
+  n_trials: 30          # Optuna trials PER (family, framing) study
   # Threads per fit. NEVER use -1/32 on this box: profiled n_jobs=8 -> 2.0s/fit,
   # 32 -> HANGS (oversubscription). 8 is the sweet spot; SCREEN_THREADS env var
   # also caps BLAS/OpenMP before numpy imports (hist_gbdt/mlp take no n_jobs).
@@ -195,12 +195,20 @@ router_screen:
   #                NDCG curve, learned on a held-out slice of train. Floor =
   #                the constant baseline (no signal -> every bin picks the same
   #                alpha), so it cannot do worse.
-  decision_rules: [raw, calibrated]
+  # `raw` proven to lose to the constant across all 9 families (the model output
+  # is a proxy/probability, not a fusion weight) -- screen calibrated only so
+  # every trial is spent on the useful rule. Add `raw` back only to re-show the
+  # comparison for the paper.
+  decision_rules: [calibrated]
   calib_fraction: 0.2        # share of train_subset held out to FIT the calibration table
   n_calib_bins: [10, 20, 50] # number of quantile bins (searched; calibrated rule only)
   # Slow families are excluded on purpose: SVM is O(n^2)+ (dies at the 80k final
   # fit) and KNN pays O(n_train) at INFERENCE, which defeats a ~1ms router.
-  families: [lightgbm, xgboost, catboost, hist_gbdt, random_forest, extra_trees, elasticnet, logreg, mlp]
+  # catboost + mlp dropped from the screen: they are the entire slow tail
+  # (catboost|multibin ~22s/trial, mlp similar) and add no unique signal --
+  # lightgbm/xgboost cover boosted trees, rf/extra_trees bagged, elasticnet/
+  # logreg linear. Add them back for a one-off confirmation run if wanted.
+  families: [lightgbm, xgboost, hist_gbdt, random_forest, extra_trees, elasticnet, logreg]
   # regression: predict alpha directly (clipped to [0,1])
   # binary:     y = alpha > 0.5, use P(class=1) as alpha
   # multibin:   discretise alpha into n_bins, alpha = sum(proba * bin_centres)
