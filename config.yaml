@@ -214,5 +214,29 @@ router_screen:
   # multibin:   discretise alpha into n_bins, alpha = sum(proba * bin_centres)
   framings: [regression, binary, multibin]
 
+# ---- FEATURE ABLATION (src/ablate_features.py) -----------------------------
+# Stage 2: greedy BACKWARD elimination -- start from all features, drop one per
+# round (the one whose removal hurts least by dev NDCG@eval_k). ~1,000 fits for
+# 46 features, never 2^46 combinations. Chosen over group-cutting / permutation
+# importance because those break on redundant features (see the script header).
+#
+# The workhorse defaults to the stage-1 screening winner, but that winner
+# (logreg, saga solver) is ~14 s/fit -> ~4 h for the full path. Override it with
+# a fast family that was STATISTICALLY TIED with the winner -- elasticnet scored
+# 0.6759 vs 0.6767 (paired CI includes 0) and is sub-second. Nothing is lost:
+# stage 3 re-screens ALL families on the surviving feature set.
+# Leave family/framing/params unset (null) to use the stage-1 winner as-is.
+ablation:
+  family: elasticnet
+  framing: regression
+  params:
+    alpha: 0.001            # ElasticNet regularisation strength
+    l1_ratio: 0.5
+    scaler: robust          # heavy-tailed features (nqc_bm25 spans 0.5-30)
+    use_sample_weight: true # drops the ~20% flat queries whose alpha label is a tie-break artifact
+    decision_rule: calibrated
+    n_calib_bins: 10
+  min_features: 3           # prune down to this many, then pick the parsimony knee
+
 # ---- MISC ------------------------------------------------------------------
 seed: 42

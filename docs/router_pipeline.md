@@ -8,7 +8,7 @@ a trained router that predicts the fusion weight `alpha` per query.
 | # | Stage | Script | Status |
 |---|-------|--------|--------|
 | 1 | Screen model families x framings | `src/screen_routers.py` | done |
-| 2 | Feature ablation (best model from #1) | *(planned)* | — |
+| 2 | Feature ablation (greedy backward) | `src/ablate_features.py` | ready |
 | 3 | Re-screen families + params on the ablated features | *(planned)* | — |
 | 4 | Final fit on the full train split | *(planned)* | — |
 | 5 | Benchmark vs all baselines + SHAP | *(planned)* | — |
@@ -170,14 +170,121 @@ router_screen:
 The calibration table is far better estimated at stage 4 (~850 queries per bin
 instead of ~100), which is exactly where it matters.
 
-### Stage-1 results so far (hotpotqa, `raw` rule only)
+### Stage-1 RESULTS (hotpotqa, dev)
 
-All 25 configs lost to the constant. Top 5 were statistically tied and all were
-**boosted trees x classification framing**; regression framings were clearly
-worse (mean-shrinkage), MLP worst. The decisive diagnostic: **the model with the
-best oracle correlation had the worst NDCG** (`mlp|multibin` corr 0.397 →
-0.6016; `hist_gbdt|binary` corr 0.292 → 0.6346) — proof that the bottleneck is
-the decision rule, not the signal. Hence `calibrated`.
+**Run A — `raw` rule (all 9 families x 3 framings).** Every one of the 25
+configs **lost** to the constant (best `hist_gbdt|binary` 0.6346 vs 0.6637).
+The decisive diagnostic: **the model with the best oracle correlation had the
+worst NDCG** (`mlp|multibin` corr 0.397 → 0.6016; `hist_gbdt|binary` corr 0.292
+→ 0.6346). The signal was real; the *decision rule* was broken. Hence
+calibration.
+
+**Run B — `calibrated` rule (7 fast families).** Every one of the 18 configs
+**beat** the constant:
+
+```
+oracle                          0.7502
+logreg|multibin   calib[20]     0.6767   <- WINNER
+elasticnet|regression calib[10] 0.6759
+lightgbm|regression   calib[10] 0.6758
+...            (top 11 tied, significant=False)
+random_forest|binary  calib[10] 0.6729   <- worst config, still > constant
+constant alpha=0.99             0.6637   diff -0.0130 CI [-0.0159,-0.0099] SIG
+```
+
+**+0.0130 over the globally-tuned static alpha, statistically significant**
+= 15% of the available oracle headroom (0.0865).
+
+Findings:
+1. **The decision rule, not the model, was the bottleneck.** Same features,
+   same families: raw 0.60-0.635, calibrated 0.673-0.677.
+2. **Calibration is an equalizer.** All 18 configs span just 0.0038; the top 11
+   are statistically tied. The calibration layer does the work — the model only
+   has to *rank* queries.
+3. **Linear models won.** `logreg` and `elasticnet` top the table, so the
+   nominal winner is also the cheapest to serve (logistic regression + a 20-bin
+   lookup = microseconds), which underwrites the "~1 ms router" efficiency claim.
+4. **No constant-reshuffling confound.** The calibrated routers emit
+   `mean alpha ~= 0.91` while the baseline constant is 0.99, so we verified the
+   best *possible* constant on dev: also **0.99 -> 0.6637**, identical to the
+   train-tuned one. The gain therefore comes entirely from per-query variation
+   (`pred_alpha_std ~= 0.18`), not from finding a better global alpha.
+5. **`pred_oracle_corr` becomes misleading after calibration** (it fell 0.29 ->
+   0.20 while NDCG rose): the output is a binned *action*, not a prediction of
+   the oracle alpha. Keep it only as a degeneracy tripwire.
+
+**Carried into stage 2:** `logreg | multibin | calib[20]` — nominally best,
+statistically tied with 10 others, and by far the cheapest. Being linear, it
+also makes the ablation meaningful: unlike trees, a linear model genuinely
+suffers from junk features.
+
+---
+
+## Stage 2 — `ablate_features.py` (greedy backward elimination)
+
+Start from all 46 features and prune one per round: try removing each survivor,
+permanently drop the one whose removal **hurts least** by dev NDCG@eval_k.
+**1,076 fits** (46+45+…+4, plus the full-set baseline) — never 2^46 subsets.
+
+### Why greedy backward, not the alternatives
+
+The feature set has known-redundant families (`avgIDF`/`SCS`/`AvICTF`/`γ1` all
+measure specificity; `NQC`/`WIG`/`SMV`/`entropy` all measure dispersion — see
+[ltr_router_features.md](ltr_router_features.md)). That redundancy breaks both
+alternatives:
+
+| Method | Behaviour on redundant features |
+|---|---|
+| Group cutting | drops a whole family, taking its one good member with it ❌ |
+| Permutation importance | near-duplicates mask each other → **both** look useless → both dropped ❌ |
+| **Greedy backward** | drops one twin; the survivor's contribution rises, so it is kept ✓ |
+
+### Workhorse model
+
+Defaults to the stage-1 winner, but that winner (`logreg`, `saga` solver) is
+~14 s/fit → **~4 h** for the full path. `config.yaml: ablation` overrides it with
+**`elasticnet|regression`**, which scored 0.6759 vs the winner's 0.6767 —
+**statistically tied** (paired CI includes 0) — and is sub-second → **~5–15 min**.
+Nothing is lost: **stage 3 re-screens every family** on the surviving features.
+
+### Rules
+
+- **Drop rule** — paired bootstrap of `(candidate − full set)` over the same dev
+  queries. Paired, not independent CIs: two configs can have overlapping
+  independent CIs while one wins query-by-query.
+- **Final pick — parsimony, not argmax.** The **smallest** feature set whose
+  paired CI vs the best path point includes 0. Taking the raw maximum overfits
+  dev; parsimony is the defensible choice *and* yields a cheaper router.
+- **Cost-aware tie-break.** Each feature is tagged by inference cost
+  (`lookup` 14, `scores` 24, `invindex` 2, `embed` 4, `text` 2). When two
+  removals tie, the **costlier** feature is dropped — making this a
+  quality/latency Pareto result rather than pure accuracy chasing. The expensive
+  ones are `clarity_*` (needs top-50 doc **text**) and
+  `autocorr_*`/`apair_ratio_*` (embedding gathers + pairwise similarity).
+
+### Caveat (must survive into the paper)
+
+The greedy path takes ~1,000 maxima against dev, so the selected subset looks
+**better on dev than it truly is** (selection bias). Contained by stage 3
+re-screening and by test staying sealed until stage 5 — but treat the ablation
+gain as **optimistic** until stage 5 confirms it.
+
+### Outputs (`data/results/router_screening/`)
+
+| File | Contents |
+|---|---|
+| `<ds>_ablation_path.csv` | one row per round — the **NDCG vs #features curve** (paper figure) |
+| `<ds>_ablation_rounds.csv` | every candidate fit — the drop order = redundancy-aware importance ranking |
+| `<ds>_ablation_best.json` | the chosen feature set, cost mix, parsimony rationale |
+
+### Performance gotcha: thread oversubscription
+
+On the shared 32-core box, `n_jobs=-1` (=32) **hangs** — profiled on 8,000x46:
+`n_jobs=1` 5.8s, `4` 2.4s, **`8` 2.0s**, `16` 2.3s, `32/64/-1` stall. A single
+study took ~7h before the fix and ~1 min after. The script therefore caps
+`OMP/OPENBLAS/MKL_NUM_THREADS` **before importing numpy** (via `SCREEN_THREADS`,
+default 8) and passes `n_jobs`/`thread_count` explicitly; `hist_gbdt` and `mlp`
+take no `n_jobs` argument and rely on the env cap. Never set `n_jobs: -1` here.
 
 ---
 

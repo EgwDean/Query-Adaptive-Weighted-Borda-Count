@@ -78,6 +78,7 @@ carry forward.
 │   ├── tune_bm25.py         # grid-search BM25 k1/b/stemming by NDCG@eval_k
 │   ├── create_dataset.py    # Phase-2 feature dataset (per-split, features + oracle alpha)
 │   ├── screen_routers.py    # Phase-2 stage 1: screen model families x framings (Optuna)
+│   ├── ablate_features.py   # Phase-2 stage 2: greedy backward feature elimination
 │   └── dataset_pipeline.py  # run download -> embed -> alpha_distribution
 └── data/
     ├── datasets/<name>/        # raw BEIR corpus, queries, qrels
@@ -213,8 +214,8 @@ History of metric/parameter changes: [docs/bm25_parameter_history.md](docs/bm25_
 | # | Step | Script | Status |
 |---|---|---|---|
 | 0 | Feature dataset + alpha→NDCG curve (per split) | `src/create_dataset.py` | ✅ done |
-| 1 | Screen model families × framings (Optuna, per family) + decision rule | `src/screen_routers.py` | 🔄 re-running with calibration |
-| 2 | Feature ablation using the stage-1 winner | *(planned)* | ⬜ |
+| 1 | Screen model families × framings (Optuna, per family) + decision rule | `src/screen_routers.py` | ✅ done → `logreg\|multibin\|calib[20]`, **0.6767** |
+| 2 | Feature ablation (greedy backward, cost-aware, parsimony pick) | `src/ablate_features.py` | ✅ ready to run |
 | 3 | Re-screen families + params on the ablated features | *(planned)* | ⬜ |
 | 4 | Final fit on the full train split (~85k) | *(planned)* | ⬜ |
 | 5 | Benchmark vs all baselines + SHAP | *(planned)* | ⬜ |
@@ -223,11 +224,22 @@ Design: [docs/router_pipeline.md](docs/router_pipeline.md) ·
 features: [docs/feature_dataset.md](docs/feature_dataset.md) ·
 baselines: [docs/comparison_methods.md](docs/comparison_methods.md).
 
-### The bar (hotpotqa, NDCG@10)
+### Where we stand (hotpotqa, NDCG@10)
+
+On **dev**, after stage 1:
+```
+constant alpha=0.99            0.6637   <- the bar (also the BEST POSSIBLE constant on dev)
+ROUTER logreg|multibin calib   0.6767   <- +0.0130, significant (CI excludes 0)
+oracle (per-query best alpha)  0.7502   <- ceiling
+```
+The router captures **15% of the 0.0865 oracle headroom**, and the gain is
+verified to be genuine per-query routing (the best possible *constant* on dev is
+also 0.99 → 0.6637, so none of it comes from re-tuning a global alpha).
+
+For reference, the **test**-split curve (untouched until stage 5):
 ```
 pure dense  (alpha=0.00)   0.3929
 pure BM25   (alpha=1.00)   0.6300
-best static (alpha=0.99)   0.6451   <- what the router must beat
-oracle      (per-query)    0.7364   <- ceiling
-headroom                   0.0913   (+14.2% relative)
+best static (alpha=0.99)   0.6451
+oracle      (per-query)    0.7364
 ```
