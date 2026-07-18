@@ -9,7 +9,7 @@ a trained router that predicts the fusion weight `alpha` per query.
 |---|-------|--------|--------|
 | 1 | Screen model families x framings | `src/screen_routers.py` | done |
 | 2 | Feature ablation (greedy backward) | `src/ablate_features.py` | ready |
-| 3 | Re-screen families + params on the ablated features | *(planned)* | — |
+| 3 | Re-screen families x framings x feature sets | `src/rescreen_routers.py` | ready |
 | 4 | Final fit on the full train split | *(planned)* | — |
 | 5 | Benchmark vs all baselines + SHAP | *(planned)* | — |
 
@@ -276,6 +276,88 @@ gain as **optimistic** until stage 5 confirms it.
 | `<ds>_ablation_path.csv` | one row per round — the **NDCG vs #features curve** (paper figure) |
 | `<ds>_ablation_rounds.csv` | every candidate fit — the drop order = redundancy-aware importance ranking |
 | `<ds>_ablation_best.json` | the chosen feature set, cost mix, parsimony rationale |
+
+### Stage-2 RESULTS (hotpotqa, dev)
+
+```
+full 46 features    0.6755
+best 11 features    0.6773   (+0.0018 vs full, SIGNIFICANT -- pruning noise helps)
+chosen 4 features   0.6756   (identical to full; parsimony pick)
+3 features          0.6740   (all cheap; no embedding work)
+constant            0.6637
+```
+
+**42 of 46 features can be dropped with no loss.** Surviving 4, one per signal
+type and with no redundancy:
+
+| feature | cost | captures |
+|---|---|---|
+| `ql` | lookup | query surface (length) |
+| `entropy_bm25` | scores | BM25 confidence / score dispersion |
+| `apair_ratio_bm25` | **embed** | embedding coherence of BM25's top results |
+| `d_wig_z` | scores | **cross-retriever** BM25-vs-dense comparison |
+
+**Pareto choice.** `apair_ratio_bm25` is the only expensive survivor (embedding
+gathers + pairwise similarity). Dropping it costs **0.0016** (0.6756 → 0.6740)
+and leaves a router needing *no embedding work at all* — still **+0.0103** over
+the constant. For an efficiency-led paper the 3-feature variant is arguably the
+better headline, with the 4th reported as the marginal extra it buys.
+
+### ⚠️ Caveat: the ablation is model-specific
+
+`dev_ndcg` is **byte-identical (0.676585) for twelve consecutive rounds**
+(n=41→30). Those drops changed the output *not at all* — ElasticNet's L1 penalty
+had zeroed their coefficients (and/or the 10-bin quantisation absorbed the tiny
+changes). So the result is **"which features the linear router uses"**, not
+"which features carry signal". A tree could exploit features the linear model
+zeroed.
+
+Consequence for stage 3: **do not screen on the 4-feature set alone.** Screen
+every family across several candidate sets — `{3, 4, 11, 46}` — so we can tell
+whether any family benefits from more features. Otherwise the linear model's
+blind spots get baked into the final router.
+
+---
+
+## Stage 3 — `rescreen_routers.py` (families x framings x FEATURE SETS)
+
+Re-opens the family **and** feature-set decisions together. Two reasons:
+
+1. The best family can change once the feature set shrinks — fewer features
+   favour different inductive biases.
+2. The stage-2 ablation is **model-specific** (see its caveat above): a linear
+   workhorse with L1 zeroed a dozen features outright. Screening only the
+   4-feature set would bake that blind spot into the final router.
+
+So: one independent Optuna study per `(feature_set, family, framing)` over
+`feature_set_sizes: [3, 4, 11, 46]`, taken from the exact surviving subsets on
+the stage-2 pruning path. **If a tree on 11 features beats a linear on 4, this
+is where we find out.** `catboost` and `mlp` are back in — at 3-11 features they
+are cheap, and this run picks the final model.
+
+Everything else matches stage 1 (same subsample, 80/20 fit/calibrate, dev
+scoring, calibrated rule, paired bootstrap), so numbers stay comparable.
+
+### Final pick: cheapest among the tied
+
+The whole field has stayed inside ~0.003 across every run so far, so the nominal
+maximum is noise. The rule is therefore: among configs **statistically tied**
+with the nominal best (paired-bootstrap CI of the difference includes 0), take
+the **fewest features**, then the **lowest inference cost class**. That is the
+defensible choice *and* it is what makes the "~1 ms router" claim hold.
+
+Cost: 96 studies x 30 trials ~= 2,880 fits. The 3/4/11-feature sets are fast;
+the 46-feature set with catboost/mlp is the slow tail (~1 h of the total). Drop
+`46` from `feature_set_sizes`, or catboost/mlp from `families`, if time is short
+— but the 46 row is what answers "does any family want more features?".
+
+### Outputs (`data/results/router_screening/`)
+
+| File | Contents |
+|---|---|
+| `<ds>_rescreen.csv` | every trial |
+| `<ds>_rescreen_best_per_config.csv` | one row per (features, family, framing) + tie test |
+| `<ds>_rescreen_best.json` | **the final router**: features + family + framing + params |
 
 ### Performance gotcha: thread oversubscription
 

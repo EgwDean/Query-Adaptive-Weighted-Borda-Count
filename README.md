@@ -79,6 +79,7 @@ carry forward.
 │   ├── create_dataset.py    # Phase-2 feature dataset (per-split, features + oracle alpha)
 │   ├── screen_routers.py    # Phase-2 stage 1: screen model families x framings (Optuna)
 │   ├── ablate_features.py   # Phase-2 stage 2: greedy backward feature elimination
+│   ├── rescreen_routers.py  # Phase-2 stage 3: re-screen families x feature sets
 │   └── dataset_pipeline.py  # run download -> embed -> alpha_distribution
 └── data/
     ├── datasets/<name>/        # raw BEIR corpus, queries, qrels
@@ -215,8 +216,8 @@ History of metric/parameter changes: [docs/bm25_parameter_history.md](docs/bm25_
 |---|---|---|---|
 | 0 | Feature dataset + alpha→NDCG curve (per split) | `src/create_dataset.py` | ✅ done |
 | 1 | Screen model families × framings (Optuna, per family) + decision rule | `src/screen_routers.py` | ✅ done → `logreg\|multibin\|calib[20]`, **0.6767** |
-| 2 | Feature ablation (greedy backward, cost-aware, parsimony pick) | `src/ablate_features.py` | ✅ ready to run |
-| 3 | Re-screen families + params on the ablated features | *(planned)* | ⬜ |
+| 2 | Feature ablation (greedy backward, cost-aware, parsimony pick) | `src/ablate_features.py` | ✅ done → **46 → 4 features, no loss** |
+| 3 | Re-screen families × framings × feature sets {3,4,11,46} | `src/rescreen_routers.py` | ✅ ready to run |
 | 4 | Final fit on the full train split (~85k) | *(planned)* | ⬜ |
 | 5 | Benchmark vs all baselines + SHAP | *(planned)* | ⬜ |
 

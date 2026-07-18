@@ -238,5 +238,22 @@ ablation:
     n_calib_bins: 10
   min_features: 3           # prune down to this many, then pick the parsimony knee
 
+# ---- STAGE-3 RE-SCREEN (src/rescreen_routers.py) ---------------------------
+# Re-open the family AND feature-set decisions together, because (a) the best
+# family can change once the feature set shrinks, and (b) the stage-2 ablation
+# was run with a LINEAR workhorse whose L1 penalty zeroed a dozen features
+# outright -- so it found "what the linear router uses", not "what carries
+# signal". Screening several feature sets is what stops that blind spot from
+# being baked in: if a tree on 11 features beats a linear on 4, we find out.
+#
+# Feature sets are taken from the stage-2 ablation path at these sizes (46 =
+# the full set). catboost/mlp are back in: with 3-11 features they are cheap,
+# and this is the run that picks the FINAL model.
+rescreen:
+  feature_set_sizes: [3, 4, 11, 46]
+  n_trials: 30
+  families: [lightgbm, xgboost, catboost, hist_gbdt, random_forest, extra_trees, elasticnet, logreg, mlp]
+  framings: [regression, binary, multibin]
+
 # ---- MISC ------------------------------------------------------------------
 seed: 42
