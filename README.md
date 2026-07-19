@@ -80,6 +80,7 @@ carry forward.
 │   ├── screen_routers.py    # Phase-2 stage 1: screen model families x framings (Optuna)
 │   ├── ablate_features.py   # Phase-2 stage 2: greedy backward feature elimination
 │   ├── rescreen_routers.py  # Phase-2 stage 3: re-screen families x feature sets
+│   ├── final_fit.py         # Phase-2 stage 4: fit on full train, freeze the router
 │   └── dataset_pipeline.py  # run download -> embed -> alpha_distribution
 └── data/
     ├── datasets/<name>/        # raw BEIR corpus, queries, qrels
@@ -217,9 +218,17 @@ History of metric/parameter changes: [docs/bm25_parameter_history.md](docs/bm25_
 | 0 | Feature dataset + alpha→NDCG curve (per split) | `src/create_dataset.py` | ✅ done |
 | 1 | Screen model families × framings (Optuna, per family) + decision rule | `src/screen_routers.py` | ✅ done → `logreg\|multibin\|calib[20]`, **0.6767** |
 | 2 | Feature ablation (greedy backward, cost-aware, parsimony pick) | `src/ablate_features.py` | ✅ done → **46 → 4 features, no loss** |
-| 3 | Re-screen families × framings × feature sets {3,4,11,46} | `src/rescreen_routers.py` | ✅ ready to run |
-| 4 | Final fit on the full train split (~85k) | *(planned)* | ⬜ |
-| 5 | Benchmark vs all baselines + SHAP | *(planned)* | ⬜ |
+| 3 | Re-screen families × framings × feature sets {3,4,11,46} | `src/rescreen_routers.py` | ✅ done → **3-feature logreg**, 0.6758 |
+| 4 | Final fit on the full train split (~85k), freeze the artefact | `src/final_fit.py` | ✅ ready to run |
+| 5a | Benchmark: all Tier-0/1 baselines + router (**test opened once**) | *(planned)* | ⬜ |
+| 5b | Cross-encoder reranking layer | *(planned)* | ⬜ |
+| 5c | SPLADE (learned sparse) — separate sub-project | *(planned)* | ⬜ |
+
+**Final router (dev):** `logreg | binary | calibrated`, 3 features —
+`ql`, `entropy_bm25`, `d_wig_z` → **0.6758** vs constant **0.6637** (+0.0121).
+No embeddings, no document text: a length count, a BM25 score histogram, and a
+cross-retriever score difference. ⚠️ Dev has been used for selection three
+times; the honest number is the single **test** evaluation at stage 5.
 
 Design: [docs/router_pipeline.md](docs/router_pipeline.md) ·
 features: [docs/feature_dataset.md](docs/feature_dataset.md) ·

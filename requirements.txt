@@ -35,6 +35,7 @@ PyStemmer==2.2.0.1
 
 # Router training / screening (src/screen_routers.py)
 scikit-learn==1.5.0
+joblib==1.4.2
 optuna==3.6.1
 lightgbm==4.3.0
 xgboost==2.0.3

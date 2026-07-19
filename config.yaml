@@ -66,6 +66,7 @@ paths:
   bm25_tuning_subdir: bm25_tuning           # data/results/bm25_tuning/
   feature_dataset_subdir: feature_dataset   # data/results/feature_dataset/
   router_screening_subdir: router_screening # data/results/router_screening/
+  router_final_subdir: router_final         # data/results/router_final/ (frozen model + benchmark)
 
 # ---- LEXICAL RETRIEVER: BM25 -----------------------------------------------
 # BM25 is the lexical representative. There is NO universal best k1/b -- it is

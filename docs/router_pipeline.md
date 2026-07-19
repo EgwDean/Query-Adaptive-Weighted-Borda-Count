@@ -359,6 +359,40 @@ the 46-feature set with catboost/mlp is the slow tail (~1 h of the total). Drop
 | `<ds>_rescreen_best_per_config.csv` | one row per (features, family, framing) + tie test |
 | `<ds>_rescreen_best.json` | **the final router**: features + family + framing + params |
 
+### Stage-3 RESULTS (hotpotqa, dev) — 96 studies, ~2,880 fits, 73 min
+
+Best per feature set — **more features do NOT help**:
+
+```
+f11   0.6776   <- nominal best (elasticnet|regression)
+f46   0.6767   <- the FULL set is worse than 11
+f3    0.6758
+f4    0.6757
+constant 0.6637 | oracle 0.7502
+```
+
+1. **The stage-2 blind-spot worry is resolved.** No family — tree or otherwise —
+   benefited from the features the linear workhorse's L1 had zeroed. "A handful
+   of features suffice" is now **model-independent**, not an artifact of how we
+   pruned.
+2. **Linear + calibration dominates.** 7 of the top 8 configs are
+   `elasticnet`/`logreg`; every tree family ranks lower. `extra_trees` shows
+   `pred_alpha_std ~= 0.036` — barely varying, drifting toward the constant.
+3. **FINAL ROUTER (parsimony pick):** `f3 | logreg | binary` -> **0.6758**,
+   features **`ql`, `entropy_bm25`, `d_wig_z`** (max cost class = `scores`).
+   **+0.0121 over the constant** = 14% of oracle headroom. No embeddings, no
+   document text, no inverted-index work: a length count, one BM25 score
+   histogram, one cross-retriever score difference -> logistic regression -> bin
+   lookup. Parsimony cost 0.0018 vs the nominal best (not significant).
+
+### ⚠️ Accumulated selection bias — the main threat to validity
+
+Dev has now been used to select three times: stage 1 (18 configs), stage 2
+(~1,076 fits), stage 3 (~2,880 fits). The dev figure **0.6758 is optimistically
+biased**; the honest number is the single test evaluation at stage 5. If the bias
+is 0.003-0.005, the true gain over the constant is nearer +0.007-0.009 — still
+positive, but the dev number must not be quoted as the headline result.
+
 ### Performance gotcha: thread oversubscription
 
 On the shared 32-core box, `n_jobs=-1` (=32) **hangs** — profiled on 8,000x46:

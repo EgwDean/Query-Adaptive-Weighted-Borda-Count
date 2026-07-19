@@ -39,10 +39,11 @@ def get_paths(config, create=True):
         "bm25_tuning": os.path.join(results, p.get("bm25_tuning_subdir", "bm25_tuning")),
         "feature_dataset": os.path.join(results, p.get("feature_dataset_subdir", "feature_dataset")),
         "router_screening": os.path.join(results, p.get("router_screening_subdir", "router_screening")),
+        "router_final": os.path.join(results, p.get("router_final_subdir", "router_final")),
     }
     if create:
         for key in ("datasets", "processed", "results", "alpha_results", "bm25_tuning",
-                    "feature_dataset", "router_screening"):
+                    "feature_dataset", "router_screening", "router_final"):
             os.makedirs(paths[key], exist_ok=True)
     return paths
 
