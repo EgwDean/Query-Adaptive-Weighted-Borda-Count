@@ -1,260 +1,148 @@
 # ============================================================================
-# Query-Adaptive Weighted Borda Count  --  configuration
+# Query-Adaptive Score Fusion -- configuration
 # ----------------------------------------------------------------------------
-# Phase 1 goal: find the BEIR dataset that best balances LEXICAL and SEMANTIC
-# retrieval (highest per-query oracle-alpha spread, or alpha centred on 0.5),
-# so it is the strongest test bed for the adaptive Weighted Borda Count system.
+# Two retrievers (tuned BM25 + all-mpnet-base-v2) fused by a CONVEX COMBINATION
+# of per-query normalised scores:
 #
-# Workflow (run ONCE per dataset, manually, on the HPC):
-#   1. set `dataset:` below to one name from the catalogue
-#   2. python src/download.py          # download that BEIR dataset
-#   3. python src/embed.py             # embed its docs + queries (all-mpnet)
-#   4. python src/alpha_distribution.py# BM25 + dense, oracle alpha, boxplots
-# Repeat for each dataset you want to compare.
+#     fuse(d) = alpha * norm(bm25_score(d)) + (1-alpha) * norm(dense_score(d))
+#
+# alpha = 1 -> pure lexical, alpha = 0 -> pure semantic.
+#
+# CLAIM UNDER TEST: a per-query alpha, predicted by a cheap router, beats the
+# best single GLOBAL alpha. Rank fusion (RRF, Borda) appears only as standard
+# baselines -- score fusion is used because rank fusion discards score MAGNITUDE
+# (cf. Bruch, Gai & Ingber, ACM TOIS 2023), which is a settled point, not a
+# contribution of this work.
+#
+# ONE COMMAND RUNS EVERYTHING (sections skip if their outputs already exist):
+#     python src/pipeline.py                # all sections
+#     python src/pipeline.py --from 4       # force re-run from section 4
+#     python src/pipeline.py --only 9       # a single section
 # ============================================================================
 
-# ---- ACTIVE DATASET --------------------------------------------------------
-# Change this line for each run, then re-run the three scripts.
 dataset: hotpotqa
-
-# ---- BEIR DATASET CATALOGUE ------------------------------------------------
-# Uncomment the one you want into `dataset:` above. Stats are approximate
-# (corpus size / #queries on the eval split / avg relevant docs per query /
-# UNZIPPED on-disk size). "avg rel/query" is BEIR's reported Avg. D/Q and
-# strongly shapes NDCG/Recall behaviour (e.g. trec-covid ~493 vs msmarco ~1).
-# Disk sizes are estimates from corpus_count x avg doc length (BEIR has no
-# official disk sizes); plan for headroom. "split" is the split that carries
-# qrels; set `split:` below to match.
-#
-#   name                corpus docs   queries   avg rel/query   ~disk(unzip)  split
-#   ------------------  -----------   -------   -------------   -----------   -----
-#   scifact                  5,183        300            1.1       ~8 MB      test
-#   nfcorpus                 3,633        323           38.2       ~8 MB      test
-#   arguana                  8,674      1,406            1.0      ~10 MB      test
-#   scidocs                 25,657      1,000            4.9      ~30 MB      test
-#   fiqa                    57,638        648            2.6      ~50 MB      test
-#   trec-covid             171,332         50          493.5     ~180 MB      test
-#   webis-touche2020       382,545         49           19.0     ~700 MB      test
-#   quora                  522,931     10,000            1.6      ~60 MB      test
-#   dbpedia-entity       4,635,922        400           38.2      ~1.7 GB     test
-#   nq                   2,681,468      3,452            1.2      ~1.5 GB     test
-#   hotpotqa             5,233,329      7,405            2.0      ~1.8 GB     test
-#   fever                5,416,568      6,666            1.2      ~3.1 GB     test
-#   climate-fever        5,416,593      1,535            3.0      ~3.1 GB     test
-#   msmarco              8,841,823      6,980            1.1      ~3.5 GB     dev
-#
-# Feasibility note: BM25 (bm25s, in-RAM sparse) + dense brute-force similarity
-# are comfortable up to a few hundred-k docs on a single node. The million-doc
-# sets (nq/hotpotqa/fever/climate-fever/dbpedia/msmarco) need large RAM/VRAM and
-# are best left until after a balanced mid-size dataset is chosen. Start small:
-#   scifact, nfcorpus, fiqa, scidocs, arguana  (sanity + speed)
-#   trec-covid, webis-touche2020               (lexical-leaning, key for balance)
-
-# Eval split that carries qrels for the active dataset (test for all BEIR
-# datasets except msmarco, which uses dev).
-split: test
+split: test               # the split used by section 2 (BM25 tuning)
 
 # ---- PATHS (relative to repo root) -----------------------------------------
 paths:
   data_dir: data
-  datasets_subdir: datasets         # data/datasets/<dataset>/   (raw BEIR)
-  processed_subdir: processed_data  # data/processed_data/<dataset>/ (embeddings)
-  results_subdir: results           # data/results/
-  # One sub-folder inside results/ per experiment phase, so each phase's outputs
-  # stay separate (dataset-selection now; model-training benchmarks later).
-  alpha_results_subdir: alpha_distribution  # data/results/alpha_distribution/
-  bm25_tuning_subdir: bm25_tuning           # data/results/bm25_tuning/
-  feature_dataset_subdir: feature_dataset   # data/results/feature_dataset/
-  router_screening_subdir: router_screening # data/results/router_screening/
-  router_final_subdir: router_final         # data/results/router_final/ (frozen model + benchmark)
+  datasets_subdir: datasets         # data/datasets/<dataset>/    raw BEIR
+  processed_subdir: processed_data  # embeddings + cached retrieval
+  results_subdir: results
+  bm25_tuning_subdir: bm25_tuning           # results/bm25_tuning/
+  feature_dataset_subdir: feature_dataset   # results/feature_dataset/
+  router_screening_subdir: router_screening # results/router_screening/
+  router_final_subdir: router_final         # results/router_final/ (frozen + benchmark)
 
-# ---- LEXICAL RETRIEVER: BM25 -----------------------------------------------
-# BM25 is the lexical representative. There is NO universal best k1/b -- it is
-# corpus-dependent, which is why src/tune_bm25.py grid-searches it per dataset
-# (see bm25_tuning below) rather than relying on a fixed literature default.
-#
-# Values below = tune_bm25.py output for dataset: hotpotqa (mean NDCG@100 over
-# all queries with qrels; see data/results/bm25_tuning/ for the full grid).
-# Re-run tune_bm25.py and update this block whenever `dataset:` changes.
+# ---- PIPELINE --------------------------------------------------------------
+pipeline:
+  splits: [train, dev, test]   # train fits, dev selects, test is opened ONCE
+
+# ---- FUSION ----------------------------------------------------------------
+# `function` sets what the oracle-alpha curve and the router are built on.
+# Changing it only invalidates section 4 onward -- retrieval (section 3) is
+# cached and fusion-independent, so a different fusion costs minutes, not hours.
+fusion:
+  function: score          # score (primary) | borda | rrf  (rank fusions are baselines)
+  normalizer: minmax       # minmax | zscore   (per-query, applied to each retriever's top-k)
+  alpha_min: 0.0
+  alpha_max: 1.0
+  alpha_step: 0.01         # 101-point grid: the oracle curve is computed at every alpha
+
+# ---- LEXICAL RETRIEVER -----------------------------------------------------
 bm25:
-  method: lucene        # bm25s scoring variant: lucene | robertson | atire | bm25l | bm25+
-  k1: 0.8                # tuned on hotpotqa via src/tune_bm25.py
-  b: 0.4                 # tuned on hotpotqa via src/tune_bm25.py
-  use_stemming: true    # tuned on hotpotqa via src/tune_bm25.py
+  method: lucene
+  k1: 0.8                  # tuned on hotpotqa (section 2)
+  b: 0.4
+  use_stemming: true
 
-# ---- BM25 TUNING GRID (src/tune_bm25.py) -----------------------------------
-# Grid search over k1, b, and stemming on the ACTIVE dataset. Every combination
-# retrieves all queries and is scored by mean NDCG@100; the best combination is
-# written to results/bm25_tuning/ for you to copy into the `bm25` block above.
-# Values below are the well-known BM25 settings (Anserini 0.9/0.4, Lucene 1.2/0.75,
-# classic Okapi ranges). Default grid = 8 x 7 x 2 = 112 runs.
+# Section 2 is SKIPPED unless enabled; the values above are already tuned.
 bm25_tuning:
+  enabled: false
   k1: [0.4, 0.6, 0.8, 0.9, 1.0, 1.2, 1.6, 2.0]
   b:  [0.3, 0.4, 0.5, 0.6, 0.75, 0.9, 1.0]
   use_stemming: [true, false]
 
-# ---- SEMANTIC RETRIEVER: dense embeddings ----------------------------------
-# all-mpnet-base-v2 chosen deliberately for STRENGTH PARITY with tuned BM25
-# (so the oracle alpha is not collapsed to a corner). 768-dim, cosine, no
-# query/passage prefixes required.
-#
-# Memory scaling (so datasets up to MS MARCO's 8.8M docs fit on this box):
-#   - embeddings are written to a .npy MEMMAP shard-by-shard, so the full
-#     matrix is never held in RAM while encoding;
-#   - embedding_dtype=float32 (default) keeps full precision (8.8M x 768: ~27 GB
-#     on disk); set to float16 to halve RAM/disk (~13.5 GB) if space is tight;
-#   - dense retrieval scans the corpus in CHUNKS on the GPU, so VRAM stays flat
-#     regardless of corpus size, and matches embedding_dtype (fp32 by default).
+# ---- SEMANTIC RETRIEVER ----------------------------------------------------
 dense:
   model_name: sentence-transformers/all-mpnet-base-v2
-  batch_size: 256          # encoding batch size (lower if GPU OOM)
-  max_seq_length: 384      # truncation length for documents
-  normalize: true          # L2-normalise -> dot product == cosine
-  device: cuda             # "cuda" or "cpu"; falls back to cpu automatically
-  embedding_dtype: float32 # cached embedding storage: float32 (full precision) or float16 (half RAM/disk)
-  encode_shard_size: 100000  # docs encoded per shard, streamed to the memmap (caps host RAM)
-  retrieval_chunk_size: 50000 # corpus rows scored per GPU block in dense retrieval (caps VRAM)
-  query_batch_size: 2048      # queries scored per batch; VRAM for the similarity block ~= query_batch_size * retrieval_chunk_size * 4 bytes (lower both if CUDA OOM)
+  batch_size: 256
+  max_seq_length: 384
+  normalize: true
+  device: cuda
+  embedding_dtype: float32
+  encode_shard_size: 100000    # docs per encoding shard (caps host RAM)
+  retrieval_chunk_size: 50000  # corpus rows per GPU similarity block (caps VRAM)
+  query_batch_size: 2048       # VRAM for the block ~= query_batch * chunk * 4 bytes
 
 # ---- RETRIEVAL DEPTH -------------------------------------------------------
-# top_k    = candidate pool depth per retriever, AND the Weighted Borda list
-#            length N (fusion headroom / recall pool). Raised to 1000 to match
-#            standard BEIR practice (retrieve deep via pytrec_eval, evaluate at
-#            a shallower cutoff) -- see docs/bm25_parameter_history.md for the
-#            depth-100 -> depth-1000 transition and why it matters for Phase 1.
-# eval_k   = the cutoff used to SCORE and SELECT: oracle-alpha search,
-#            tune_bm25.py, and the reported NDCG columns. Deliberately
-#            DECOUPLED from top_k -- candidates are pooled at top_k for
-#            fusion headroom, but quality is judged/optimised at a realistic,
-#            BEIR-standard depth. PRIMARY METRIC = NDCG@eval_k (NDCG@10).
 retrieval:
-  top_k: 1000            # candidate pool depth per retriever + Borda list length N
-  eval_k: 10              # evaluation / oracle-alpha-selection cutoff (primary metric: NDCG@10)
+  top_k: 1000    # candidate pool per retriever (BEIR practice: retrieve deep)
+  eval_k: 10     # PRIMARY METRIC = NDCG@10; scoring/selection cutoff
 
-# ---- WEIGHTED BORDA COUNT --------------------------------------------------
-# score(d) = alpha*(N - rank_sparse(d)) + (1-alpha)*(N - rank_dense(d))
-# alpha = 1 -> pure BM25 (lexical) ; alpha = 0 -> pure dense (semantic).
-# Oracle alpha = the alpha maximising NDCG@eval_k for that query (lowest alpha
-# wins ties). N is the Borda list length (= retrieval.top_k, the candidate pool).
-borda:
-  N: 1000                # Borda list length (keep equal to retrieval.top_k)
-  alpha_min: 0.0
-  alpha_max: 1.0
-  alpha_step: 0.01      # 101-point grid search per query
+# ---- ROUTER FEATURES -------------------------------------------------------
+features:
+  window: 100    # top-W scores for distribution features + top-W/bottom-W for
+                 # embedding coherence. The deep top_k tail is retrieval noise:
+                 # over the full 1000 it drives WIG systematically negative.
 
-# ---- PHASE-2 FEATURE DATASET (src/create_dataset.py) -----------------------
-# Builds one training table PER SPLIT: one row per query, columns = the
-# inference-time features (see docs/feature_dataset.md), label = oracle alpha
-# (recomputed fresh here at top_k/eval_k so features and label are consistent).
-# Corpus-level assets (term stats, inverted index, embeddings, centroid) are
-# built ONCE and reused across all splits. Query embeddings for each split are
-# computed in-script (no separate embed.py run per split needed).
-create_dataset:
-  splits: [train, dev, test]   # build a CSV for each split that has qrels (missing splits skipped)
-  clarity_feedback_k: 50       # top docs used to build the query LM for Clarity Score (capped)
-  coherence_window: 100        # W: top-W / bottom-W docs for autocorrelation & A-Pair-Ratio
-  score_window_k: 100          # top-N scores for distribution-shape features (sigma_k/WIG/NQC/SMV/entropy/robust + z-cross); the deep top_k tail is retrieval noise. top_score/margin still use the very top; retrieval/fusion still use full top_k.
-  zscore_eps: 1.0e-9           # epsilon guarding all divisions / normalisations
-  debug_max_queries: null      # cap queries per split for smoke tests (null = all queries)
-  # Ablation toggles -- set any to false to drop that feature group from the CSV.
-  features:
-    query_only: true           # group A: ql, IDF-family, SCS, AvICTF, SCQ, VAR, query-centroid cosine
-    query_scope: true          # ω (needs the inverted index; slightly heavier one-time build)
-    pmi: true                  # query-term PMI co-occurrence (needs the inverted index)
-    per_retriever_scores: true # group B: top score, margin, sigma_k, WIG, NQC, SMV, entropy, robust sigma (x bm25/dense)
-    clarity: true              # Clarity Score per retriever (needs top-k doc text; capped by clarity_feedback_k)
-    coherence: true            # autocorrelation + A-Pair-Ratio per retriever (embeddings, top-W)
-    cross_retriever: true      # group D: Jaccard@k, Kendall's tau, z-score-normalised score-difference features
-
-# ---- ROUTER SCREENING (src/screen_routers.py) ------------------------------
-# Stage 1: for every (family, framing) pair run an INDEPENDENT Optuna/TPE study
-# over that family's hyperparameters. Fit on `train_subset` rows of the train
-# split, score each trial by mean NDCG@eval_k on dev (via the precomputed
-# alpha->NDCG curve). MSE/CE are logged as diagnostics only -- NEVER used to
-# select, because the alpha->NDCG curve is flat over wide plateaus.
+# ---- ROUTER SCREENING (section 5) ------------------------------------------
+# One independent Optuna/TPE study per (family, framing), so every family gets
+# the same trial budget and the comparison is best-vs-best.
 #
-# Per-family studies (rather than one BO over a mixed space) give every family
-# an identical trial budget, so the comparison is best-vs-best and fair.
-router_screen:
-  train_subset: 10000        # queries sampled from train for screening (seeded)
-  n_trials: 30          # Optuna trials PER (family, framing) study
-  # Threads per fit. NEVER use -1/32 on this box: profiled n_jobs=8 -> 2.0s/fit,
-  # 32 -> HANGS (oversubscription). 8 is the sweet spot; SCREEN_THREADS env var
-  # also caps BLAS/OpenMP before numpy imports (hist_gbdt/mlp take no n_jobs).
-  n_jobs: 8
-  # Cap on boosting rounds / tree count DURING SCREENING (screening only ranks
-  # families; the big search happens at the final-fit stage). Was 1500 -> 600.
-  max_boost_rounds: 600
-  bootstrap_resamples: 1000  # paired bootstrap over dev queries for the CIs
-  n_bins: 11                 # bins for the "multibin" framing (expected value over bin centres)
-  # DECISION RULE -- how the model's output becomes an alpha. Searched per trial.
-  #   raw        = use the model's output directly as alpha (its output is a
-  #                proxy/probability, not a fusion weight -- this is what loses
-  #                to the constant baseline).
-  #   calibrated = histogram binning: the output is only a SCORE used to bin
-  #                queries; each bin emits the alpha maximising ITS average
-  #                NDCG curve, learned on a held-out slice of train. Floor =
-  #                the constant baseline (no signal -> every bin picks the same
-  #                alpha), so it cannot do worse.
-  # `raw` proven to lose to the constant across all 9 families (the model output
-  # is a proxy/probability, not a fusion weight) -- screen calibrated only so
-  # every trial is spent on the useful rule. Add `raw` back only to re-show the
-  # comparison for the paper.
+# DECISION RULE -- how the model output becomes an alpha:
+#   raw        = use the output directly (it is a proxy/probability, NOT a
+#                fusion weight; this loses to the constant baseline).
+#   calibrated = HISTOGRAM BINNING: the output only RANKS queries into bins;
+#                each bin emits the alpha maximising its average NDCG curve,
+#                learned on a held-out slice of train. With no signal every bin
+#                picks the same alpha -> exactly the constant baseline, so this
+#                rule cannot do worse.
+router:
+  train_subset: 10000
+  n_trials: 30
+  n_jobs: 8               # NEVER -1: 32 threads oversubscribe and HANG on a shared box
+  max_boost_rounds: 600   # screening only ranks families; the final fit is unconstrained
+  bootstrap_resamples: 1000
+  n_bins: 11              # bins for the `multibin` framing
   decision_rules: [calibrated]
-  calib_fraction: 0.2        # share of train_subset held out to FIT the calibration table
-  n_calib_bins: [10, 20, 50] # number of quantile bins (searched; calibrated rule only)
-  # Slow families are excluded on purpose: SVM is O(n^2)+ (dies at the 80k final
-  # fit) and KNN pays O(n_train) at INFERENCE, which defeats a ~1ms router.
-  # catboost + mlp dropped from the screen: they are the entire slow tail
-  # (catboost|multibin ~22s/trial, mlp similar) and add no unique signal --
-  # lightgbm/xgboost cover boosted trees, rf/extra_trees bagged, elasticnet/
-  # logreg linear. Add them back for a one-off confirmation run if wanted.
+  calib_fraction: 0.2     # held-out share of train used to fit the calibration table
+  n_calib_bins: [10, 20, 50]
+  # SVM/KNN excluded: SVM is O(n^2)+ and dies at the full fit; KNN pays
+  # O(n_train) at INFERENCE, defeating a ~1 ms router.
   families: [lightgbm, xgboost, hist_gbdt, random_forest, extra_trees, elasticnet, logreg]
-  # regression: predict alpha directly (clipped to [0,1])
-  # binary:     y = alpha > 0.5, use P(class=1) as alpha
-  # multibin:   discretise alpha into n_bins, alpha = sum(proba * bin_centres)
   framings: [regression, binary, multibin]
 
-# ---- FEATURE ABLATION (src/ablate_features.py) -----------------------------
-# Stage 2: greedy BACKWARD elimination -- start from all features, drop one per
-# round (the one whose removal hurts least by dev NDCG@eval_k). ~1,000 fits for
-# 46 features, never 2^46 combinations. Chosen over group-cutting / permutation
-# importance because those break on redundant features (see the script header).
+# ---- FEATURE ABLATION (section 6) ------------------------------------------
+# Greedy BACKWARD elimination: start from all features, drop the one whose
+# removal hurts least, repeat. Chosen over group-cutting / permutation
+# importance because both break on redundant features (near-duplicates mask each
+# other, so BOTH look useless). Ties are broken toward dropping the COSTLIER
+# feature. Final pick = smallest set statistically tied with the best point.
 #
-# The workhorse defaults to the stage-1 screening winner, but that winner
-# (logreg, saga solver) is ~14 s/fit -> ~4 h for the full path. Override it with
-# a fast family that was STATISTICALLY TIED with the winner -- elasticnet scored
-# 0.6759 vs 0.6767 (paired CI includes 0) and is sub-second. Nothing is lost:
-# stage 3 re-screens ALL families on the surviving feature set.
-# Leave family/framing/params unset (null) to use the stage-1 winner as-is.
+# The workhorse is a FAST family tied with the screening winner; section 7
+# re-screens every family on the surviving features, so nothing is lost.
 ablation:
   family: elasticnet
   framing: regression
   params:
-    alpha: 0.001            # ElasticNet regularisation strength
+    alpha: 0.001
     l1_ratio: 0.5
-    scaler: robust          # heavy-tailed features (nqc_bm25 spans 0.5-30)
-    use_sample_weight: true # drops the ~20% flat queries whose alpha label is a tie-break artifact
+    scaler: robust
+    use_sample_weight: true
     decision_rule: calibrated
     n_calib_bins: 10
-  min_features: 3           # prune down to this many, then pick the parsimony knee
+  min_features: 3
 
-# ---- STAGE-3 RE-SCREEN (src/rescreen_routers.py) ---------------------------
-# Re-open the family AND feature-set decisions together, because (a) the best
-# family can change once the feature set shrinks, and (b) the stage-2 ablation
-# was run with a LINEAR workhorse whose L1 penalty zeroed a dozen features
-# outright -- so it found "what the linear router uses", not "what carries
-# signal". Screening several feature sets is what stops that blind spot from
-# being baked in: if a tree on 11 features beats a linear on 4, we find out.
-#
-# Feature sets are taken from the stage-2 ablation path at these sizes (46 =
-# the full set). catboost/mlp are back in: with 3-11 features they are cheap,
-# and this is the run that picks the FINAL model.
+# ---- RE-SCREEN (section 7) -------------------------------------------------
+# Re-opens the family AND feature-set choices together: the best family can
+# change once the feature set shrinks, and the ablation above is model-specific
+# (a linear workhorse's L1 can zero features a tree would have used). Screening
+# several sizes stops that blind spot from being baked in.
 rescreen:
-  feature_set_sizes: [3, 4, 11, 46]
+  feature_set_sizes: [3, 5, 10, 0]   # 0 = the full feature set
   n_trials: 30
   families: [lightgbm, xgboost, catboost, hist_gbdt, random_forest, extra_trees, elasticnet, logreg, mlp]
   framings: [regression, binary, multibin]
 
-# ---- MISC ------------------------------------------------------------------
 seed: 42

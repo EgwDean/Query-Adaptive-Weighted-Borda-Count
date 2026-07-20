@@ -1,14 +1,19 @@
 # Comparison Methods & Baselines
 
+> **Updated for convex score fusion.** The primary baseline is now
+> *static score fusion with one global alpha*. Rank fusion (RRF, Borda) are
+> standard baselines only — that score fusion beats them is settled in the
+> literature (Bruch et al., TOIS 2023), not a contribution here.
+
 Reference for the Phase-2 evaluation of **Query-Adaptive Weighted Borda Count**.
 
 **Golden rule:** every fusion method consumes the **same inputs** — the same
 tuned BM25 top-k and the same all-mpnet-base-v2 dense top-k — so any difference
 is attributable to the *fusion rule*, not the ingredients.
 
-**Primary comparison:** adaptive fusion (Tier 2) vs **globally-tuned static
-fusion** (Tier 1). Beating `α=0.5` is not a result; beating the best single
-global `α` is.
+**Primary comparison:** adaptive score fusion (Tier 2) vs **globally-tuned
+static score fusion** (Tier 1). Beating `α=0.5` is not a result; beating the
+best single global `α` — on the SAME fusion function — is.
 
 ---
 
@@ -18,12 +23,12 @@ global `α` is.
 |---|--------|------|----------|----------------|------|--------|
 | 1 | BM25 (tuned k1/b) | 0 | Sparse / lexical | single retriever | Floor | grid k1,b on train |
 | 2 | Dense (all-mpnet-base-v2) | 0 | Dense / semantic | single retriever | Floor | — |
-| 3 | Static Borda, α=0.5 | 1 | Fusion (rank) | BM25 + dense | Baseline (naïve) | none |
-| 4 | **Static Borda, global α\*** | 1 | Fusion (rank) | BM25 + dense | **Primary baseline** | single α\* on train |
+| 3 | Score fusion, α=0.5 | 1 | Fusion (score) | BM25 + dense | Baseline (naïve) | none |
+| 4 | **Static score fusion, global α\*** | 1 | Fusion (score) | BM25 + dense | **Primary baseline** | single α\* on dev |
 | 5 | RRF (untuned, k=60) | 1 | Fusion (rank) | BM25 + dense | Baseline (field standard) | none |
 | 6 | Weighted RRF, global α\* | 1 | Fusion (rank) | BM25 + dense | Baseline | single α\* on train |
-| 7 | Norm-score convex fusion, global α\* | 1 | Fusion (score) | BM25 + dense | Baseline (optional) | single α\* on train |
-| 8 | **Query-Adaptive Weighted Borda** | 2 | Adaptive fusion | BM25 + dense + router | **Proposed method** | router trained on train |
+| 7 | Static Borda, global α\* | 1 | Fusion (rank) | BM25 + dense | Baseline | single α\* on dev |
+| 8 | **Query-Adaptive Score Fusion** | 2 | Adaptive fusion | BM25 + dense + router | **Proposed method** | router trained on train |
 | 9 | SPLADE | 3 | Learned sparse | single retriever / alt sparse leg | Topline (context) | — |
 | 10 | Cross-encoder reranker | 3 | Reranking (2nd stage) | rerank top-k of a 1st stage | Topline (context) | on BM25 / dense / fusion |
 | 11 | Oracle α (per-query best) | — | Adaptive fusion | BM25 + dense + qrels | Upper bound / ceiling | per-query brute force |
