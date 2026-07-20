@@ -56,6 +56,18 @@ NO_SAMPLE_WEIGHT = {"mlp"}
 COST_CLASS = {"lookup": 1, "scores": 2, "embed": 3}
 
 
+def run_tag(cfg):
+    """Namespace for every section 4-9 output.
+
+    Outputs from section 4 onward depend on the FUSION FUNCTION (the alpha label,
+    the alpha->NDCG curve, and everything trained on them). Tagging keeps the
+    minmax / rrf / borda arms of the study separate, and stops artefacts written
+    by an earlier pipeline with a different schema from being silently reused.
+    """
+    fu = cfg["fusion"]
+    return f"score-{fu['normalizer']}" if fu["function"] == "score" else fu["function"]
+
+
 def feature_cost(n):
     if n.startswith(("autocorr", "apair_ratio", "query_centroid")):
         return "embed"
@@ -122,6 +134,7 @@ def _side_features(pfx, s, rows, emb, W, eps):
 
 def sec_dataset(cfg, paths):
     name = cfg["dataset"]
+    tag = run_tag(cfg)
     fd = paths["feature_dataset"]
     splits = cfg["pipeline"]["splits"]
     top_k = cfg["retrieval"]["top_k"]
@@ -134,8 +147,8 @@ def sec_dataset(cfg, paths):
     N = top_k
 
     need = [s for s in splits
-            if not (os.path.exists(os.path.join(fd, f"{name}_{s}_features.csv")) and
-                    os.path.exists(os.path.join(fd, f"{name}_{s}_curve.npy")))]
+            if not (os.path.exists(os.path.join(fd, f"{name}_{tag}_{s}_features.csv")) and
+                    os.path.exists(os.path.join(fd, f"{name}_{tag}_{s}_curve.npy")))]
     if not need:
         return f"already built for {splits}"
 
@@ -146,7 +159,7 @@ def sec_dataset(cfg, paths):
     emb = np.load(os.path.join(pdir, "corpus_emb.npy"), mmap_mode="r")
     centroid = np.asarray(emb[::max(1, len(cid) // 200000)], dtype=np.float64).mean(0)
     centroid = centroid.astype(np.float32)
-    np.save(os.path.join(fd, f"{name}_alpha_grid.npy"), alphas.astype(np.float32))
+    np.save(os.path.join(fd, f"{name}_{tag}_alpha_grid.npy"), alphas.astype(np.float32))
     queries = read_queries(folder)
 
     for s in need:
@@ -190,8 +203,8 @@ def sec_dataset(cfg, paths):
                       "n_rel": len(rels), "eval_k": eval_k, "top_k": top_k})
             rows.append(r)
             curves.append(curve)
-        pd.DataFrame(rows).to_csv(os.path.join(fd, f"{name}_{s}_features.csv"), index=False)
-        np.save(os.path.join(fd, f"{name}_{s}_curve.npy"), np.stack(curves).astype(np.float32))
+        pd.DataFrame(rows).to_csv(os.path.join(fd, f"{name}_{tag}_{s}_features.csv"), index=False)
+        np.save(os.path.join(fd, f"{name}_{tag}_{s}_curve.npy"), np.stack(curves).astype(np.float32))
         print(f"  [{s}] {len(rows):,} rows x {len(rows[0])} cols")
     return f"built {need}"
 
@@ -199,10 +212,10 @@ def sec_dataset(cfg, paths):
 # =========================================================================== #
 # Router plumbing (shared by sections 5-9)
 # =========================================================================== #
-def load_split(paths, name, split):
+def load_split(paths, name, split, tag):
     fd = paths["feature_dataset"]
-    return (pd.read_csv(os.path.join(fd, f"{name}_{split}_features.csv")),
-            np.load(os.path.join(fd, f"{name}_{split}_curve.npy")))
+    return (pd.read_csv(os.path.join(fd, f"{name}_{tag}_{split}_features.csv")),
+            np.load(os.path.join(fd, f"{name}_{tag}_{split}_curve.npy")))
 
 
 def ndcg_of_alpha(pred, curve, grid):
@@ -381,16 +394,17 @@ def _router_ctx(cfg, paths, feats=None):
     name = cfg["dataset"]
     r = cfg["router"]
     seed = int(cfg.get("seed", 42))
+    tag = run_tag(cfg)
     grid = np.load(os.path.join(paths["feature_dataset"],
-                                f"{name}_alpha_grid.npy")).astype(np.float64)
-    tr, trc = load_split(paths, name, "train")
-    dv, dvc = load_split(paths, name, "dev")
+                                f"{name}_{tag}_alpha_grid.npy")).astype(np.float64)
+    tr, trc = load_split(paths, name, "train", tag)
+    dv, dvc = load_split(paths, name, "dev", tag)
     allf = [c for c in tr.columns if c not in NON_FEATURE]
     feats = feats or allf
     n = min(int(r["train_subset"]), len(tr))
     sub = np.random.default_rng(seed).choice(len(tr), size=n, replace=False)
     bins = np.linspace(0, 1, int(r["n_bins"]))
-    return dict(name=name, seed=seed, grid=grid, bins=bins, allf=allf, feats=feats,
+    return dict(name=name, tag=tag, seed=seed, grid=grid, bins=bins, allf=allf, feats=feats,
                 Xtr=tr.iloc[sub][feats].to_numpy(float),
                 alpha_tr=tr.iloc[sub]["alpha"].to_numpy(float),
                 wtr=tr.iloc[sub]["alpha_sensitivity"].to_numpy(float),
@@ -451,11 +465,14 @@ def _references(c):
 # SECTION 5: screen families x framings
 # =========================================================================== #
 def sec_screen(cfg, paths):
-    out = os.path.join(paths["router_screening"], f"{cfg['dataset']}_screen.csv")
+    tag = run_tag(cfg)
+    out = os.path.join(paths["router_screening"], f"{cfg['dataset']}_{tag}_screen.csv")
     if os.path.exists(out):
         d = pd.read_csv(out)
-        b = d[d.family != "reference"].iloc[0]
-        return f"already done: best {b['family']}|{b['framing']} {b['dev_ndcg']:.4f}"
+        if "family" in d.columns:
+            b = d[d.family != "reference"].iloc[0]
+            return f"already done: best {b['family']}|{b['framing']} {b['dev_ndcg']:.4f}"
+        print(f"  {out}: unexpected schema -- rebuilding.")
     c = _router_ctx(cfg, paths)
     r = cfg["router"]
     const_pq, oracle_pq, a_const = _references(c)
@@ -484,7 +501,7 @@ def sec_screen(cfg, paths):
     df = pd.DataFrame(recs).sort_values("dev_ndcg", ascending=False).reset_index(drop=True)
     df.to_csv(out, index=False)
     b = df[df.family != "reference"].iloc[0]
-    with open(os.path.join(paths["router_screening"], f"{cfg['dataset']}_screen_best.json"),
+    with open(os.path.join(paths["router_screening"], f"{cfg['dataset']}_{tag}_screen_best.json"),
               "w", encoding="utf-8") as f:
         json.dump(dict(family=b["family"], framing=b["framing"],
                        params=json.loads(b["params"]), dev_ndcg=float(b["dev_ndcg"]),
@@ -497,10 +514,13 @@ def sec_screen(cfg, paths):
 # =========================================================================== #
 def sec_ablate(cfg, paths):
     name = cfg["dataset"]
-    out = os.path.join(paths["router_screening"], f"{name}_ablation.csv")
+    tag = run_tag(cfg)
+    out = os.path.join(paths["router_screening"], f"{name}_{tag}_ablation.csv")
     if os.path.exists(out):
         d = pd.read_csv(out)
-        return f"already done: chose {int(d[d.chosen].iloc[0]['n_features'])} features"
+        if "chosen" in d.columns and d["chosen"].any():
+            return f"already done: chose {int(d[d.chosen].iloc[0]['n_features'])} features"
+        print(f"  {out}: unexpected schema -- rebuilding.")
     ab = cfg["ablation"]
     c = _router_ctx(cfg, paths)
     fam, fr, params = ab["family"], ab["framing"], ab["params"]
@@ -551,7 +571,7 @@ def sec_ablate(cfg, paths):
     path.loc[ci, "chosen"] = True
     path.to_csv(out, index=False)
     ch = path.loc[ci]
-    with open(os.path.join(paths["router_screening"], f"{name}_ablation_best.json"),
+    with open(os.path.join(paths["router_screening"], f"{name}_{tag}_ablation_best.json"),
               "w", encoding="utf-8") as f:
         json.dump(dict(n_features=int(ch["n_features"]), dev_ndcg=float(ch["dev_ndcg"]),
                        features=ch["features"].split("|"),
@@ -565,14 +585,17 @@ def sec_ablate(cfg, paths):
 # =========================================================================== #
 def sec_rescreen(cfg, paths):
     name = cfg["dataset"]
-    out = os.path.join(paths["router_screening"], f"{name}_rescreen.csv")
+    tag = run_tag(cfg)
+    out = os.path.join(paths["router_screening"], f"{name}_{tag}_rescreen.csv")
     if os.path.exists(out):
         d = pd.read_csv(out)
-        b = d[d.chosen].iloc[0]
-        return f"already done: chose {b['config']} {b['dev_ndcg']:.4f}"
+        if "chosen" in d.columns and d["chosen"].any():
+            b = d[d.chosen].iloc[0]
+            return f"already done: chose {b['config']} {b['dev_ndcg']:.4f}"
+        print(f"  {out}: unexpected schema -- rebuilding.")
     rc = cfg["rescreen"]
     c = _router_ctx(cfg, paths)
-    ap = pd.read_csv(os.path.join(paths["router_screening"], f"{name}_ablation.csv"))
+    ap = pd.read_csv(os.path.join(paths["router_screening"], f"{name}_{tag}_ablation.csv"))
     by_n = {int(r["n_features"]): r["features"].split("|") for _, r in ap.iterrows()}
     sets = {}
     for s0 in rc["feature_set_sizes"]:
@@ -632,7 +655,7 @@ def sec_rescreen(cfg, paths):
     df.loc[ci, "chosen"] = True
     df.to_csv(out, index=False)
     ch = meta[df.loc[ci, "config"]]
-    with open(os.path.join(paths["router_screening"], f"{name}_rescreen_best.json"),
+    with open(os.path.join(paths["router_screening"], f"{name}_{tag}_rescreen_best.json"),
               "w", encoding="utf-8") as f:
         json.dump(dict(config=df.loc[ci, "config"], family=ch["family"],
                        framing=ch["framing"], params=ch["params"],
@@ -647,16 +670,17 @@ def sec_rescreen(cfg, paths):
 # =========================================================================== #
 def sec_final_fit(cfg, paths):
     name = cfg["dataset"]
-    art = os.path.join(paths["router_final"], f"{name}_router.joblib")
+    tag = run_tag(cfg)
+    art = os.path.join(paths["router_final"], f"{name}_{tag}_router.joblib")
     if os.path.exists(art):
         return f"already frozen: {art}"
-    with open(os.path.join(paths["router_screening"], f"{name}_rescreen_best.json"),
+    with open(os.path.join(paths["router_screening"], f"{name}_{tag}_rescreen_best.json"),
               encoding="utf-8") as f:
         spec = json.load(f)
     c = _router_ctx(cfg, paths, feats=spec["features"])
     r = cfg["router"]
-    tr, trc = load_split(paths, name, "train")
-    dv, dvc = load_split(paths, name, "dev")
+    tr, trc = load_split(paths, name, "train", tag)
+    dv, dvc = load_split(paths, name, "dev", tag)
     feats = spec["features"]
     Xtr = tr[feats].to_numpy(float)
     ytr = make_target(tr["alpha"].to_numpy(float), spec["framing"], c["bins"])
@@ -682,7 +706,7 @@ def sec_final_fit(cfg, paths):
                      calib_edges=(calib[0] if calib else None),
                      calib_bin_alpha=(calib[1] if calib else None),
                      alpha_grid=c["grid"]), art)
-    with open(os.path.join(paths["router_final"], f"{name}_router_meta.json"),
+    with open(os.path.join(paths["router_final"], f"{name}_{tag}_router_meta.json"),
               "w", encoding="utf-8") as f:
         json.dump(dict(dataset=name, **{k: spec[k] for k in ("family", "framing", "params")},
                        features=feats, n_train=len(Xtr), dev_ndcg=float(pq.mean()),
@@ -699,7 +723,8 @@ def sec_final_fit(cfg, paths):
 # =========================================================================== #
 def sec_benchmark(cfg, paths):
     name = cfg["dataset"]
-    out = os.path.join(paths["router_final"], f"{name}_benchmark.csv")
+    tag = run_tag(cfg)
+    out = os.path.join(paths["router_final"], f"{name}_{tag}_benchmark.csv")
     if os.path.exists(out):
         return f"already done: {out}"
     top_k = cfg["retrieval"]["top_k"]
@@ -714,7 +739,7 @@ def sec_benchmark(cfg, paths):
     pdir = processed_dir(paths, name, create=False)
     with open(os.path.join(pdir, "corpus_ids.json"), encoding="utf-8") as f:
         cid = json.load(f)
-    R = joblib.load(os.path.join(paths["router_final"], f"{name}_router.joblib"))
+    R = joblib.load(os.path.join(paths["router_final"], f"{name}_{tag}_router.joblib"))
 
     lists = {}
     for s in ("dev", "test"):
@@ -745,7 +770,7 @@ def sec_benchmark(cfg, paths):
     print(f"  score a*={a_sc:.2f} | borda a*={a_bo:.2f} | rrf a*={a_rr:.2f}")
 
     tdf = pd.read_csv(os.path.join(paths["feature_dataset"],
-                                   f"{name}_test_features.csv")).set_index("qid")
+                                   f"{name}_{tag}_test_features.csv")).set_index("qid")
     qids, qr, bi, bv, di, dv_ = lists["test"]
     keep = [q for q in qids if q in tdf.index]
     X = tdf.loc[keep, R["features"]].to_numpy(float)
@@ -812,12 +837,12 @@ def sec_benchmark(cfg, paths):
     df = pd.DataFrame(rows)
     df.to_csv(out, index=False)
     pd.DataFrame({"qid": used, **{l: acc[l]["ndcg10"] for l, _, _, _ in METHODS}}).to_csv(
-        os.path.join(paths["router_final"], f"{name}_benchmark_per_query.csv"), index=False)
+        os.path.join(paths["router_final"], f"{name}_{tag}_benchmark_per_query.csv"), index=False)
     pd.set_option("display.width", 200)
     print("\n" + df[["method", "ndcg10", "ci_lo", "ci_hi", "ndcg100", "mrr100",
                      "recall100", "diff_vs_baseline", "significant"]].to_string(index=False))
     r0 = df[df.method == "ROUTER (ours)"].iloc[0]
-    with open(os.path.join(paths["router_final"], f"{name}_benchmark.json"),
+    with open(os.path.join(paths["router_final"], f"{name}_{tag}_benchmark.json"),
               "w", encoding="utf-8") as f:
         json.dump(dict(dataset=name, n_queries=len(used), baseline=base_lbl,
                        router_ndcg10=float(r0["ndcg10"]),
