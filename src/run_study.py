@@ -129,6 +129,11 @@ def aggregate(cfg, paths):
                 continue
             with open(jp, encoding="utf-8") as f:
                 b = json.load(f)
+            # the chosen router spec: lets us report FEATURE STABILITY across
+            # cells (with configs statistically tied, the exact set is
+            # interchangeable -- the signal FAMILY is the claim, not the names)
+            mp = os.path.join(paths["router_final"], f"{ds}_{tag}_router_meta.json")
+            meta = json.load(open(mp, encoding="utf-8")) if os.path.exists(mp) else {}
             tbl = {r["method"]: r for r in b["table"]}
             base = next((v for k, v in tbl.items() if "[BASELINE]" in k), None)
             router = tbl.get("ROUTER (ours)")
@@ -148,7 +153,10 @@ def aggregate(cfg, paths):
                 gain_ci_lo=router["diff_ci_lo"], gain_ci_hi=router["diff_ci_hi"],
                 significant=router["significant"],
                 pct_headroom=(router["diff_vs_baseline"] / head * 100) if head > 0 else np.nan,
-                router_us=b.get("router_us_per_query", np.nan)))
+                router_us=b.get("router_us_per_query", np.nan),
+                model=f"{meta.get('family','?')}|{meta.get('framing','?')}",
+                n_features=len(meta.get("features", [])) or np.nan,
+                features="|".join(meta.get("features", []))))
     if not rows:
         return None
     df = pd.DataFrame(rows).sort_values(["alpha_iqr", "dataset", "fusion"],
@@ -210,7 +218,18 @@ def main():
     pd.set_option("display.width", 220)
     print(f"\n[study] wrote {out}\n")
     print(df[["dataset", "fusion", "role", "alpha_iqr", "static_best", "router",
-              "oracle", "gain", "significant", "pct_headroom"]].to_string(index=False))
+              "oracle", "headroom", "gain", "significant", "pct_headroom"]].to_string(index=False))
+    print("\n[study] chosen router per cell:")
+    print(df[["dataset", "fusion", "model", "n_features", "features"]].to_string(index=False))
+    # With configs statistically tied, the greedy ablation picks near-arbitrarily
+    # among equivalent feature sets -- so the claim is the signal FAMILY and the
+    # small COUNT, not the specific names. This frequency table is the evidence.
+    from collections import Counter
+    feats = Counter(f for row in df["features"].dropna() for f in row.split("|") if f)
+    if feats:
+        print(f"\n[study] feature frequency across {len(df)} cells (stability):")
+        for f, n in feats.most_common():
+            print(f"  {n:2d}/{len(df)}  {f}")
     ok = df[df.role == "held-out"]
     if len(ok) >= 3 and ok["alpha_iqr"].notna().all():
         r = np.corrcoef(ok["alpha_iqr"], ok["gain"])[0, 1]
