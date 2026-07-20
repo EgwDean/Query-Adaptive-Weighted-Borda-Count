@@ -145,4 +145,33 @@ rescreen:
   families: [lightgbm, xgboost, catboost, hist_gbdt, random_forest, extra_trees, elasticnet, logreg, mlp]
   framings: [regression, binary, multibin]
 
+# ---- THE STUDY (src/run_study.py) ------------------------------------------
+# Runs the whole (dataset x fusion) matrix unattended. Resumable and
+# fault-tolerant: every section skips when its outputs exist, and a failing cell
+# is logged and skipped rather than killing the run.
+#
+#   nohup python src/run_study.py > study.out 2>&1 &   # fire and forget
+#   python src/run_study.py --dry-run                  # show the matrix
+#   python src/run_study.py --status                   # progress
+#   python src/run_study.py --aggregate-only           # rebuild STUDY_SUMMARY.csv
+#
+# PROTOCOL: the development dataset runs the FULL pipeline (0-9) -- that is
+# where the method is designed. Held-out datasets run only 0-4, 8, 9 and INHERIT
+# the router spec chosen on the development dataset, so nothing is ever selected
+# on held-out data; only weights + the calibration table are refit.
+#
+# Datasets are ordered by oracle-alpha spread (IQR from the Phase-1 analysis in
+# data/results/alpha_distribution/alpha_summary.csv) to span the H1 axis:
+#   hotpotqa 0.79 | dbpedia-entity 0.70 | fever 0.39 | fiqa 0.08 | quora 0.00
+# quora is the NEGATIVE CONTROL: H1 predicts ~zero gain there.
+study:
+  development_dataset: hotpotqa
+  datasets: [hotpotqa, fever, fiqa, quora]
+  fusions:
+    - {function: score, normalizer: minmax}
+    - {function: rrf}
+    - {function: borda}
+  dev_sections:     [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  heldout_sections: [0, 1, 2, 3, 4, 8, 9]
+
 seed: 42

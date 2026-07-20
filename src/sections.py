@@ -56,6 +56,22 @@ NO_SAMPLE_WEIGHT = {"mlp"}
 COST_CLASS = {"lookup": 1, "scores": 2, "embed": 3}
 
 
+def resolve_splits(paths, name):
+    """Which splits this dataset actually has, and which to fit / select on.
+
+    Several BEIR datasets ship no `train` split (e.g. quora, dbpedia-entity are
+    dev+test only). Falling back to dev as the FIT split is safe in frozen-config
+    mode, where nothing is selected -- the router spec is inherited, so dev is
+    only used to fit weights and the calibration table.
+    """
+    from utils import dataset_dir as _dd
+    folder = _dd(paths, name)
+    avail = [x for x in ("train", "dev", "test") if read_qrels(folder, x) is not None]
+    fit = "train" if "train" in avail else ("dev" if "dev" in avail else None)
+    sel = "dev" if ("dev" in avail and fit != "dev") else fit
+    return avail, fit, sel
+
+
 def run_tag(cfg):
     """Namespace for every section 4-9 output.
 
@@ -146,6 +162,8 @@ def sec_dataset(cfg, paths):
     alphas = np.round(np.arange(fu["alpha_min"], fu["alpha_max"] + 1e-9, fu["alpha_step"]), 4)
     N = top_k
 
+    avail, _, _ = resolve_splits(paths, name)
+    splits = [s for s in splits if s in avail]
     need = [s for s in splits
             if not (os.path.exists(os.path.join(fd, f"{name}_{tag}_{s}_features.csv")) and
                     os.path.exists(os.path.join(fd, f"{name}_{tag}_{s}_curve.npy")))]
@@ -397,14 +415,15 @@ def _router_ctx(cfg, paths, feats=None):
     tag = run_tag(cfg)
     grid = np.load(os.path.join(paths["feature_dataset"],
                                 f"{name}_{tag}_alpha_grid.npy")).astype(np.float64)
-    tr, trc = load_split(paths, name, "train", tag)
-    dv, dvc = load_split(paths, name, "dev", tag)
+    _, fit_s, sel_s = resolve_splits(paths, name)
+    tr, trc = load_split(paths, name, fit_s, tag)
+    dv, dvc = load_split(paths, name, sel_s, tag)
     allf = [c for c in tr.columns if c not in NON_FEATURE]
     feats = feats or allf
     n = min(int(r["train_subset"]), len(tr))
     sub = np.random.default_rng(seed).choice(len(tr), size=n, replace=False)
     bins = np.linspace(0, 1, int(r["n_bins"]))
-    return dict(name=name, tag=tag, seed=seed, grid=grid, bins=bins, allf=allf, feats=feats,
+    return dict(name=name, tag=tag, seed=seed, fit_split=fit_s, sel_split=sel_s, grid=grid, bins=bins, allf=allf, feats=feats,
                 Xtr=tr.iloc[sub][feats].to_numpy(float),
                 alpha_tr=tr.iloc[sub]["alpha"].to_numpy(float),
                 wtr=tr.iloc[sub]["alpha_sensitivity"].to_numpy(float),
@@ -631,20 +650,20 @@ def sec_rescreen(cfg, paths):
                 _, pred, _ = _refit_best(c, fam, fr, st.best_trial.params, Xtr, Xdev)
                 pq = ndcg_of_alpha(pred, c["dv_curve"], c["grid"])
                 pm, ps, pc = pred_diag(pred, c["alpha_dev"])
-                tag = f"f{nf}|{fam}|{fr}"
-                per_q[tag] = pq
-                meta[tag] = dict(n=nf, cost=cost, std=ps, family=fam, framing=fr,
+                key = f"f{nf}|{fam}|{fr}"      # NOT `tag`: that is the fusion tag
+                per_q[key] = pq
+                meta[key] = dict(n=nf, cost=cost, std=ps, family=fam, framing=fr,
                                  params=st.best_trial.params, features=fs)
                 el = time.perf_counter() - t0
-                print(f"  [{done}/{n_st}] {tag:32s} {pq.mean():.4f} std={ps:.3f} "
+                print(f"  [{done}/{n_st}] {key:32s} {pq.mean():.4f} std={ps:.3f} "
                       f"ETA {el/done*(n_st-done)/60:.1f}m")
     models = {k: v for k, v in per_q.items() if k not in ("constant", "oracle")}
     top = max(models, key=lambda k: models[k].mean())
     rows = []
-    for tag, pq in per_q.items():
+    for key, pq in per_q.items():      # NOT `tag`: that is the fusion tag
         d_, lo, hi = paired_bootstrap(pq, per_q[top], c["n_boot"], c["seed"])
-        m = meta[tag]
-        rows.append(dict(config=tag, n_features=m["n"], max_cost=m["cost"],
+        m = meta[key]
+        rows.append(dict(config=key, n_features=m["n"], max_cost=m["cost"],
                          dev_ndcg=float(pq.mean()), diff_vs_best=d_,
                          tied_with_best=not (lo > 0 or hi < 0), pred_std=m["std"]))
     df = pd.DataFrame(rows).sort_values("dev_ndcg", ascending=False).reset_index(drop=True)
@@ -674,13 +693,22 @@ def sec_final_fit(cfg, paths):
     art = os.path.join(paths["router_final"], f"{name}_{tag}_router.joblib")
     if os.path.exists(art):
         return f"already frozen: {art}"
-    with open(os.path.join(paths["router_screening"], f"{name}_{tag}_rescreen_best.json"),
-              encoding="utf-8") as f:
+    # Held-out datasets inherit the spec chosen on the DEVELOPMENT dataset, so
+    # no selection whatsoever happens on them (see study.inherit_spec_from).
+    src_ds = (cfg.get("study", {}) or {}).get("inherit_spec_from") or name
+    spec_p = os.path.join(paths["router_screening"], f"{src_ds}_{tag}_rescreen_best.json")
+    if not os.path.exists(spec_p) and src_ds != name:
+        raise SystemExit(f"[final] {spec_p} missing -- run the development dataset "
+                         f"({src_ds}) through section 7 first.")
+    with open(spec_p, encoding="utf-8") as f:
         spec = json.load(f)
+    if src_ds != name:
+        print(f"  inheriting router spec from '{src_ds}' ({spec['family']}|{spec['framing']}, "
+              f"{len(spec['features'])} features)")
     c = _router_ctx(cfg, paths, feats=spec["features"])
     r = cfg["router"]
-    tr, trc = load_split(paths, name, "train", tag)
-    dv, dvc = load_split(paths, name, "dev", tag)
+    tr, trc = load_split(paths, name, c["fit_split"], tag)
+    dv, dvc = load_split(paths, name, c["sel_split"], tag)
     feats = spec["features"]
     Xtr = tr[feats].to_numpy(float)
     ytr = make_target(tr["alpha"].to_numpy(float), spec["framing"], c["bins"])
