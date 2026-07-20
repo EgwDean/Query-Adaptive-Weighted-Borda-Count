@@ -152,16 +152,52 @@ def fuse_rrf(bm_r, dn_r, bm_s, dn_s, alpha, N, norm=None):
 FUSERS = {"score": fuse_score, "borda": fuse_borda, "rrf": fuse_rrf}
 
 
-def alpha_curve(bm_r, dn_r, bm_s, dn_s, rels, cid, alphas, N, k, fuser, norm):
+def fusion_arrays(bm_r, dn_r, bm_s, dn_s, fusion, N, norm="minmax"):
+    """Per-doc contribution of each retriever, aligned to the union of the lists.
+
+    Neither side depends on alpha, so sweeping the alpha grid becomes a
+    VECTORISED weighted sum instead of 101 full re-fusions (which re-normalised
+    both 1000-doc lists every time -- 101x redundant work per query).
+    """
+    if fusion == "score":
+        f = NORMALIZERS[norm or "minmax"]
+        nb, nd = f(bm_r, bm_s), f(dn_r, dn_s)
+    elif fusion == "borda":
+        nb = {int(d): float(N - r) for r, d in enumerate(bm_r)}
+        nd = {int(d): float(N - r) for r, d in enumerate(dn_r)}
+    elif fusion == "rrf":
+        nb = {int(d): 1.0 / (RRF_K + r + 1) for r, d in enumerate(bm_r)}
+        nd = {int(d): 1.0 / (RRF_K + r + 1) for r, d in enumerate(dn_r)}
+    else:
+        raise ValueError(fusion)
+    docs = list(set(nb) | set(nd))
+    va = np.fromiter((nb.get(d, 0.0) for d in docs), dtype=np.float64, count=len(docs))
+    vb = np.fromiter((nd.get(d, 0.0) for d in docs), dtype=np.float64, count=len(docs))
+    return docs, va, vb
+
+
+def topk_ids(docs, s, k):
+    """Top-k doc ids by score. argpartition is O(n) vs argsort's O(n log n);
+    only the k winners are then ordered."""
+    if len(s) <= k:
+        order = np.argsort(-s, kind="stable")
+    else:
+        part = np.argpartition(-s, k)[:k]
+        order = part[np.argsort(-s[part], kind="stable")]
+    return [docs[i] for i in order[:k]]
+
+
+def alpha_curve(bm_r, dn_r, bm_s, dn_s, rels, cid, alphas, N, k, fusion, norm):
     """NDCG@k at EVERY alpha on the grid.
 
     Storing the whole curve (not just the argmax) is what lets any predicted
     alpha be scored later by table lookup instead of re-running retrieval, and
     it yields the per-query alpha sensitivity. np.argmax -> lowest alpha wins ties.
     """
+    docs, va, vb = fusion_arrays(bm_r, dn_r, bm_s, dn_s, fusion, N, norm)
     curve = np.empty(len(alphas), dtype=np.float32)
     for i, a in enumerate(alphas):
-        v = ndcg([cid[j] for j in fuser(bm_r, dn_r, bm_s, dn_s, a, N, norm)[:k]], rels, k)
+        v = ndcg([cid[j] for j in topk_ids(docs, a * va + (1.0 - a) * vb, k)], rels, k)
         if v is None:
             return None, None, None
         curve[i] = v

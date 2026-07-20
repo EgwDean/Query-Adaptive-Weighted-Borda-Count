@@ -31,7 +31,7 @@ import joblib
 from utils import dataset_dir, processed_dir
 from core import (N_THREADS, RRF_K, FUSERS, fuse_score, alpha_curve, ndcg, mrr,
                   recall_at, bootstrap_ci, paired_bootstrap, read_queries,
-                  read_qrels, load_retrieval)
+                  read_qrels, load_retrieval, fusion_arrays, topk_ids)
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -127,7 +127,7 @@ def sec_dataset(cfg, paths):
     top_k = cfg["retrieval"]["top_k"]
     eval_k = cfg["retrieval"].get("eval_k", 10)
     fu = cfg["fusion"]
-    fuser, norm = FUSERS[fu["function"]], fu["normalizer"]
+    fusion, norm = fu["function"], fu["normalizer"]
     W = int(cfg["features"]["window"])
     eps = 1e-9
     alphas = np.round(np.arange(fu["alpha_min"], fu["alpha_max"] + 1e-9, fu["alpha_step"]), 4)
@@ -159,7 +159,7 @@ def sec_dataset(cfg, paths):
                 continue
             bm_r, bm_s, dn_r, dn_s = bi[i], bv[i].astype(np.float64), di[i], dv[i].astype(np.float64)
             curve, a_star, nd = alpha_curve(bm_r, dn_r, bm_s, dn_s, rels, cid,
-                                            alphas, N, eval_k, fuser, norm)
+                                            alphas, N, eval_k, fusion, norm)
             if curve is None:
                 continue
             r = {"dataset": name, "split": s, "qid": q}
@@ -723,26 +723,25 @@ def sec_benchmark(cfg, paths):
         lists[s] = (qids, qr, bi, bv, di, dv_)
 
     # tune every global alpha on DEV -- same opportunity the router had
-    def tune(fuser, nrm):
+    def tune(fusion, nrm):
+        """Grid-search ONE global alpha on dev. Precomputes each query's fusion
+        arrays once, so the alpha sweep is a vectorised weighted sum."""
         qids, qr, bi, bv, di, dv_ = lists["dev"]
-        best, bv_ = alphas[0], -1
-        for a in alphas:
-            tot = n = 0
-            for i, q in enumerate(qids):
-                rels = {d: int(g) for d, g in qr.get(q, {}).items() if int(g) > 0}
-                if not rels:
-                    continue
-                rk = [cid[j] for j in fuser(bi[i], di[i], bv[i].astype(float),
-                                            dv_[i].astype(float), a, N, nrm)[:eval_k]]
-                v = ndcg(rk, rels, eval_k)
-                if v is not None:
-                    tot += v
-                    n += 1
-            if tot / max(n, 1) > bv_:
-                bv_, best = tot / max(n, 1), a
-        return float(best)
+        pre = []
+        for i, q in enumerate(qids):
+            rels = {d: int(g) for d, g in qr.get(q, {}).items() if int(g) > 0}
+            if rels:
+                pre.append((fusion_arrays(bi[i], di[i], bv[i].astype(float),
+                                          dv_[i].astype(float), fusion, N, nrm), rels))
+        tot = np.zeros(len(alphas))
+        for (docs, va, vb), rels in pre:
+            for j, a in enumerate(alphas):
+                v = ndcg([cid[d] for d in topk_ids(docs, a * va + (1 - a) * vb, eval_k)],
+                         rels, eval_k)
+                tot[j] += v or 0.0
+        return float(alphas[int(tot.argmax())])
     print("  tuning global alphas on dev ...")
-    a_sc, a_bo, a_rr = tune(FUSERS["score"], norm), tune(FUSERS["borda"], None), tune(FUSERS["rrf"], None)
+    a_sc, a_bo, a_rr = tune("score", norm), tune("borda", None), tune("rrf", None)
     print(f"  score a*={a_sc:.2f} | borda a*={a_bo:.2f} | rrf a*={a_rr:.2f}")
 
     tdf = pd.read_csv(os.path.join(paths["feature_dataset"],
@@ -780,12 +779,14 @@ def sec_benchmark(cfg, paths):
             elif kind == "dense":
                 rk = [cid[int(j)] for j in d_r]
             elif kind == "oracle":
-                best, rk = -1, []
+                docs, va, vb = fusion_arrays(b_r, d_r, b_s, d_s, "score", N, nrm)
+                best, ba = -1.0, alphas[0]
                 for aa in alphas:
-                    cand = [cid[j] for j in fuse_score(b_r, d_r, b_s, d_s, aa, N, nrm)[:eval_k]]
-                    v = ndcg(cand, rels, eval_k)
+                    v = ndcg([cid[d] for d in topk_ids(docs, aa * va + (1 - aa) * vb, eval_k)],
+                             rels, eval_k)
                     if v is not None and v > best:
-                        best, rk = v, cand
+                        best, ba = v, aa
+                rk = [cid[j] for j in fuse_score(b_r, d_r, b_s, d_s, ba, N, nrm)]
             else:
                 aa = ralpha.get(q, a_sc) if kind == "router" else a
                 f = FUSERS["score"] if kind == "router" else FUSERS[kind]
