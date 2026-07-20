@@ -248,21 +248,26 @@ def sec_retrieve(cfg, paths):
     pdir = processed_dir(paths, name, create=False)
     top_k = cfg["retrieval"]["top_k"]
     splits = cfg["pipeline"]["splits"]
-    todo = [s for s in splits
-            if not os.path.exists(os.path.join(pdir, f"retrieval_{s}_top{top_k}.npz"))
-            and read_qrels(folder, s) is not None]
-    if not todo:
+
+    def cache_p(s):
+        return os.path.join(pdir, f"retrieval_{s}_top{top_k}.npz")
+
+    # A cache written before q_emb was added holds valid BM25/dense results but
+    # no query embeddings. Re-encoding queries takes seconds, so REPAIR those
+    # instead of re-running retrieval (which would cost ~15 min for dev+test).
+    todo, repair = [], []
+    for s in splits:
+        if read_qrels(folder, s) is None:
+            continue
+        if not os.path.exists(cache_p(s)):
+            todo.append(s)
+        elif "q_emb" not in np.load(cache_p(s), allow_pickle=False).files:
+            repair.append(s)
+    if not todo and not repair:
         return f"already cached for {splits}"
 
     with open(os.path.join(pdir, "corpus_ids.json"), encoding="utf-8") as f:
         cid = json.load(f)
-    print(f"  loading corpus text ({len(cid):,} docs) + BM25 index")
-    texts = read_corpus_texts(folder, cid)
-    st = Stemmer.Stemmer("english") if (cfg["bm25"].get("use_stemming") and Stemmer) else None
-    retr, _ = _bm25_index(texts, cfg["bm25"], st)
-    del texts
-    gc.collect()
-
     d = cfg["dense"]
     dev = "cuda" if (d.get("device", "cuda") != "cpu" and torch.cuda.is_available()) else "cpu"
     dtype = (torch.float16 if (dev == "cuda" and
@@ -270,8 +275,27 @@ def sec_retrieve(cfg, paths):
     model = SentenceTransformer(d["model_name"], device=dev)
     if d.get("max_seq_length"):
         model.max_seq_length = d["max_seq_length"]
-    corpus_emb = np.load(os.path.join(pdir, "corpus_emb.npy"), mmap_mode="r")
     queries = read_queries(folder)
+
+    for s in repair:                       # add q_emb only; keep the ranked lists
+        z = np.load(cache_p(s), allow_pickle=False)
+        qids = [str(q) for q in z["qids"]]
+        print(f"  [{s}] repairing cache: encoding {len(qids):,} queries (lists kept)")
+        qe = model.encode([queries[q] for q in qids], batch_size=d.get("batch_size", 256),
+                          show_progress_bar=True, normalize_embeddings=True,
+                          convert_to_numpy=True).astype(np.float32)
+        np.savez(cache_p(s), qids=np.asarray(qids), bm_idx=z["bm_idx"], bm_val=z["bm_val"],
+                 dn_idx=z["dn_idx"], dn_val=z["dn_val"], q_emb=qe)
+    if not todo:
+        return f"repaired {repair} (q_emb added; retrieval reused)"
+
+    print(f"  loading corpus text ({len(cid):,} docs) + BM25 index")
+    texts = read_corpus_texts(folder, cid)
+    st = Stemmer.Stemmer("english") if (cfg["bm25"].get("use_stemming") and Stemmer) else None
+    retr, _ = _bm25_index(texts, cfg["bm25"], st)
+    del texts
+    gc.collect()
+    corpus_emb = np.load(os.path.join(pdir, "corpus_emb.npy"), mmap_mode="r")
 
     for s in todo:
         qr = read_qrels(folder, s)
@@ -279,7 +303,11 @@ def sec_retrieve(cfg, paths):
         qt = [queries[q] for q in qids]
         print(f"  [{s}] {len(qids):,} queries: BM25 ...")
         tok = bm25s.tokenize(qt, stopwords="en", stemmer=st, show_progress=False)
-        bi, bv = retr.retrieve(tok, k=min(top_k, len(cid)), show_progress=True)
+        kk = min(top_k, len(cid))
+        try:    # n_threads is a large win here; not present on older bm25s
+            bi, bv = retr.retrieve(tok, k=kk, show_progress=True, n_threads=N_THREADS)
+        except TypeError:
+            bi, bv = retr.retrieve(tok, k=kk, show_progress=True)
         print(f"  [{s}] dense ...")
         qe = model.encode(qt, batch_size=d.get("batch_size", 256), show_progress_bar=True,
                           normalize_embeddings=True, convert_to_numpy=True).astype(np.float32)
@@ -291,16 +319,6 @@ def sec_retrieve(cfg, paths):
                  dn_idx=di, dn_val=dv.astype(np.float32), q_emb=qe)
         print(f"  [{s}] cached.")
     return f"retrieved {todo}"
-
-
-def load_retrieval(paths, name, split, top_k):
-    p = os.path.join(processed_dir(paths, name, create=False),
-                     f"retrieval_{split}_top{top_k}.npz")
-    if not os.path.exists(p):
-        raise SystemExit(f"missing {p} -- run section 3 (retrieve) first.")
-    z = np.load(p, allow_pickle=False)
-    return ([str(q) for q in z["qids"]], z["bm_idx"], z["bm_val"],
-            z["dn_idx"], z["dn_val"], z["q_emb"])
 
 
 def main():
