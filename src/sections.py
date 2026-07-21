@@ -797,10 +797,16 @@ def sec_benchmark(cfg, paths):
     a_sc, a_bo, a_rr = tune("score", norm), tune("borda", None), tune("rrf", None)
     print(f"  score a*={a_sc:.2f} | borda a*={a_bo:.2f} | rrf a*={a_rr:.2f}")
 
+    # dtype=str: numeric qids (fever/fiqa/quora) would otherwise be read as int64
+    # and never match the string qids from retrieval, giving an empty feature set.
     tdf = pd.read_csv(os.path.join(paths["feature_dataset"],
-                                   f"{name}_{tag}_test_features.csv")).set_index("qid")
+                                   f"{name}_{tag}_test_features.csv"),
+                      dtype={"qid": str}).set_index("qid")
     qids, qr, bi, bv, di, dv_ = lists["test"]
     keep = [q for q in qids if q in tdf.index]
+    if not keep:
+        raise SystemExit(f"[benchmark] no test qids matched {name}_{tag} features "
+                         f"(retrieval vs feature-CSV qid mismatch).")
     X = tdf.loc[keep, R["features"]].to_numpy(float)
     t = time.perf_counter()
     raw = predict_alpha(R["model"], X, R["framing"], R["bins"])
@@ -810,14 +816,27 @@ def sec_benchmark(cfg, paths):
     ralpha = dict(zip(keep, raw))
     print(f"  router: {us:.1f} us/query, alpha mean={raw.mean():.3f} std={raw.std():.3f}")
 
-    METHODS = [("BM25", "bm25", None, None), ("Dense", "dense", None, None),
-               ("Score fusion a=0.5", "score", 0.5, norm),
-               (f"Score fusion a*={a_sc:.2f} [BASELINE]", "score", a_sc, norm),
-               (f"Borda a*={a_bo:.2f}", "borda", a_bo, None),
-               ("RRF k=60", "rrf", 0.5, None),
-               (f"Weighted RRF a*={a_rr:.2f}", "rrf", a_rr, None),
-               ("ROUTER (ours)", "router", None, norm),
-               ("Oracle alpha", "oracle", None, norm)]
+    # The ROUTER, the primary baseline, and the oracle all use THIS cell's fusion
+    # function (the one the router was trained on) -- applying a borda/rrf-trained
+    # router through score fusion, or comparing it to a score baseline, is
+    # meaningless. The other two fusions appear as cross-context static rows.
+    prim = fu["function"]
+    prim_norm = norm if prim == "score" else None
+    a_star = {"score": a_sc, "borda": a_bo, "rrf": a_rr}
+    label_of = {"score": "Score fusion", "borda": "Borda", "rrf": "RRF"}
+
+    # (label, kind, (fusion, alpha, normalizer))
+    METHODS = [("BM25", "bm25", None), ("Dense", "dense", None),
+               (f"{label_of[prim]} a=0.5", "fuse", (prim, 0.5, prim_norm)),
+               (f"{label_of[prim]} a*={a_star[prim]:.2f} [BASELINE]", "fuse",
+                (prim, a_star[prim], prim_norm))]
+    for other in ("score", "borda", "rrf"):     # cross-fusion static context
+        if other != prim:
+            METHODS.append((f"{label_of[other]} a*={a_star[other]:.2f}", "fuse",
+                            (other, a_star[other], norm if other == "score" else None)))
+    METHODS += [("ROUTER (ours)", "router", (prim, None, prim_norm)),
+                ("Oracle alpha", "oracle", (prim, None, prim_norm))]
+
     acc = {m[0]: {k: [] for k in ("ndcg10", "ndcg100", "mrr100", "recall100")} for m in METHODS}
     used = []
     for i, q in enumerate(tqdm(qids, desc="  scoring test")):
@@ -826,24 +845,25 @@ def sec_benchmark(cfg, paths):
             continue
         used.append(q)
         b_r, b_s, d_r, d_s = bi[i], bv[i].astype(float), di[i], dv_[i].astype(float)
-        for label, kind, a, nrm in METHODS:
+        for label, kind, spec in METHODS:
             if kind == "bm25":
                 rk = [cid[int(j)] for j in b_r]
             elif kind == "dense":
                 rk = [cid[int(j)] for j in d_r]
             elif kind == "oracle":
-                docs, va, vb = fusion_arrays(b_r, d_r, b_s, d_s, "score", N, nrm)
+                ff, _, nn = spec
+                docs, va, vb = fusion_arrays(b_r, d_r, b_s, d_s, ff, N, nn)
                 best, ba = -1.0, alphas[0]
                 for aa in alphas:
                     v = ndcg([cid[d] for d in topk_ids(docs, aa * va + (1 - aa) * vb, eval_k)],
                              rels, eval_k)
                     if v is not None and v > best:
                         best, ba = v, aa
-                rk = [cid[j] for j in fuse_score(b_r, d_r, b_s, d_s, ba, N, nrm)]
-            else:
-                aa = ralpha.get(q, a_sc) if kind == "router" else a
-                f = FUSERS["score"] if kind == "router" else FUSERS[kind]
-                rk = [cid[j] for j in f(b_r, d_r, b_s, d_s, aa, N, nrm)]
+                rk = [cid[j] for j in FUSERS[ff](b_r, d_r, b_s, d_s, ba, N, nn)]
+            else:                                # "fuse" (static) or "router"
+                ff, a, nn = spec
+                aa = ralpha.get(q, a_star[prim]) if kind == "router" else a
+                rk = [cid[j] for j in FUSERS[ff](b_r, d_r, b_s, d_s, aa, N, nn)]
             acc[label]["ndcg10"].append(ndcg(rk, rels, eval_k) or 0.0)
             acc[label]["ndcg100"].append(ndcg(rk, rels, 100) or 0.0)
             acc[label]["mrr100"].append(mrr(rk, rels, 100))
@@ -852,7 +872,7 @@ def sec_benchmark(cfg, paths):
     base_lbl = [m[0] for m in METHODS if "[BASELINE]" in m[0]][0]
     base = np.asarray(acc[base_lbl]["ndcg10"])
     rows = []
-    for label, _, _, _ in METHODS:
+    for label, _, _ in METHODS:
         a10 = np.asarray(acc[label]["ndcg10"])
         lo, hi = bootstrap_ci(a10, n_boot, seed)
         d_, dlo, dhi = paired_bootstrap(a10, base, n_boot, seed)
@@ -864,7 +884,7 @@ def sec_benchmark(cfg, paths):
                          significant=bool(dlo > 0 or dhi < 0)))
     df = pd.DataFrame(rows)
     df.to_csv(out, index=False)
-    pd.DataFrame({"qid": used, **{l: acc[l]["ndcg10"] for l, _, _, _ in METHODS}}).to_csv(
+    pd.DataFrame({"qid": used, **{l: acc[l]["ndcg10"] for l, _, _ in METHODS}}).to_csv(
         os.path.join(paths["router_final"], f"{name}_{tag}_benchmark_per_query.csv"), index=False)
     pd.set_option("display.width", 200)
     print("\n" + df[["method", "ndcg10", "ci_lo", "ci_hi", "ndcg100", "mrr100",
