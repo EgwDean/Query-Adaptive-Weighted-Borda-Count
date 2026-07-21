@@ -160,18 +160,30 @@ rescreen:
 # the router spec chosen on the development dataset, so nothing is ever selected
 # on held-out data; only weights + the calibration table are refit.
 #
-# Datasets are ordered by oracle-alpha spread (IQR from the Phase-1 analysis in
-# data/results/alpha_distribution/alpha_summary.csv) to span the H1 axis:
-#   hotpotqa 0.79 | dbpedia-entity 0.70 | fever 0.39 | fiqa 0.08 | quora 0.00
+# Datasets span the H1 axis by oracle-alpha spread (IQR from the Phase-1 analysis
+# in data/results/alpha_distribution/alpha_summary.csv). Every held-out dataset
+# needs a non-test split to refit the router's weights + calibration table, so
+# TEST-ONLY BEIR datasets (arguana, scidocs, trec-covid, dbpedia, ...) cannot be
+# used here. The small corpora nfcorpus/scifact are minutes each and fill the
+# mid-range cheaply:
+#   hotpotqa 0.79 | nfcorpus 0.50 | fever 0.39 | scifact 0.25 | fiqa 0.08 | quora 0.00
 # quora is the NEGATIVE CONTROL: H1 predicts ~zero gain there.
 study:
   development_dataset: hotpotqa
-  datasets: [hotpotqa, fever, fiqa, quora]
+  datasets: [hotpotqa, nfcorpus, fever, scifact, fiqa, quora]
   fusions:
     - {function: score, normalizer: minmax}
     - {function: rrf}
     - {function: borda}
   dev_sections:     [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
   heldout_sections: [0, 1, 2, 3, 4, 8, 9]
+
+# ---- H2 EXPERIMENT (src/h2_decision_rule.py) -------------------------------
+# Screens every (family, framing) under BOTH decision rules on the development
+# dataset, keeping both outcomes, to show that a router's RAW output loses to the
+# constant baseline while histogram-binned CALIBRATION fixes it. Defaults to the
+# router families/framings/n_trials if unset.
+h2:
+  n_trials: 25
 
 seed: 42

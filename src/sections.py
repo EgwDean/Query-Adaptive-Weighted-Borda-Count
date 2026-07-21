@@ -769,17 +769,21 @@ def sec_benchmark(cfg, paths):
         cid = json.load(f)
     R = joblib.load(os.path.join(paths["router_final"], f"{name}_{tag}_router.joblib"))
 
+    # Tune the global-alpha baselines on the non-test split (dev if present, else
+    # train -- same split the router's weights/calibration were fit on). scifact
+    # has no dev; test-only datasets never reach here (they cannot fit a router).
+    _, _, tune_split = resolve_splits(paths, name)
     lists = {}
-    for s in ("dev", "test"):
+    for s in (tune_split, "test"):
         qids, bi, bv, di, dv_, _ = load_retrieval(paths, name, s, top_k)
         qr = read_qrels(folder, s)
         lists[s] = (qids, qr, bi, bv, di, dv_)
 
-    # tune every global alpha on DEV -- same opportunity the router had
+    # tune every global alpha on the tuning split -- same opportunity the router had
     def tune(fusion, nrm):
-        """Grid-search ONE global alpha on dev. Precomputes each query's fusion
-        arrays once, so the alpha sweep is a vectorised weighted sum."""
-        qids, qr, bi, bv, di, dv_ = lists["dev"]
+        """Grid-search ONE global alpha. Precomputes each query's fusion arrays
+        once, so the alpha sweep is a vectorised weighted sum."""
+        qids, qr, bi, bv, di, dv_ = lists[tune_split]
         pre = []
         for i, q in enumerate(qids):
             rels = {d: int(g) for d, g in qr.get(q, {}).items() if int(g) > 0}
