@@ -111,15 +111,23 @@ def run_cell(cell, cfg, paths, log_dir):
         return "done", "ok"
 
 
+def cell_iqr(paths, ds, tag):
+    """Oracle-alpha IQR for this cell, measured on the NON-TEST split (dev, else
+    train). This is the H1 x-axis: complementarity measured WITHOUT touching test,
+    under the same fusion as the gain -- so it 'predicts' the test gain rather
+    than being read off the same data."""
+    _, _, sel = S.resolve_splits(paths, ds)
+    p = os.path.join(paths["feature_dataset"], f"{ds}_{tag}_{sel}_features.csv")
+    if not os.path.exists(p):
+        return np.nan
+    a = pd.read_csv(p, usecols=["alpha"])["alpha"].to_numpy()
+    q1, q3 = np.percentile(a, [25, 75])
+    return float(q3 - q1)
+
+
 def aggregate(cfg, paths):
     """Collect every finished cell into the study table (the H1 scaling figure)."""
     st = cfg["study"]
-    spread = {}
-    sp = os.path.join(paths["results"], "alpha_distribution", "alpha_summary.csv")
-    if os.path.exists(sp):
-        d = pd.read_csv(sp)
-        spread = dict(zip(d["dataset"], d["alpha_iqr"]))
-
     rows = []
     for ds in st["datasets"]:
         for fu in st["fusions"]:
@@ -142,7 +150,7 @@ def aggregate(cfg, paths):
                 continue
             head = oracle["ndcg10"] - base["ndcg10"]
             rows.append(dict(
-                dataset=ds, fusion=tag, alpha_iqr=spread.get(ds, np.nan),
+                dataset=ds, fusion=tag, alpha_iqr=round(cell_iqr(paths, ds, tag), 4),
                 role="dev" if ds == st["development_dataset"] else "held-out",
                 n_queries=b["n_queries"],
                 bm25=tbl.get("BM25", {}).get("ndcg10", np.nan),

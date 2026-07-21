@@ -302,12 +302,27 @@ def sec_retrieve(cfg, paths):
         qids = [q for q in queries if q in qr and qr[q]]
         qt = [queries[q] for q in qids]
         print(f"  [{s}] {len(qids):,} queries: BM25 ...")
-        tok = bm25s.tokenize(qt, stopwords="en", stemmer=st, show_progress=False)
         kk = min(top_k, len(cid))
-        try:    # n_threads is a large win here; not present on older bm25s
-            bi, bv = retr.retrieve(tok, k=kk, show_progress=True, n_threads=N_THREADS)
-        except TypeError:
-            bi, bv = retr.retrieve(tok, k=kk, show_progress=True)
+        # bm25s raises IndexError on a query that tokenises to ZERO terms
+        # (all-stopword / punctuation queries -- nfcorpus has some). Retrieve only
+        # the non-empty queries; give empty ones an all-zero BM25 row, which
+        # min-max-normalises to 0 so fusion correctly falls back to dense.
+        qtoks = bm25s.tokenize(qt, stopwords="en", stemmer=st, show_progress=False,
+                               return_ids=False)
+        bi = np.tile(np.arange(kk, dtype=np.int64), (len(qids), 1))
+        bv = np.zeros((len(qids), kk), dtype=np.float32)
+        ne = [i for i, t in enumerate(qtoks) if len(t) > 0]
+        if len(ne) < len(qids):
+            print(f"  [{s}] {len(qids)-len(ne)} query(ies) tokenise to nothing "
+                  f"-> BM25 row zeroed (dense-only for those)")
+        if ne:
+            sub = [qtoks[i] for i in ne]
+            try:    # n_threads is a large win here; not present on older bm25s
+                sbi, sbv = retr.retrieve(sub, k=kk, show_progress=True, n_threads=N_THREADS)
+            except TypeError:
+                sbi, sbv = retr.retrieve(sub, k=kk, show_progress=True)
+            for r, i in enumerate(ne):
+                bi[i], bv[i] = sbi[r], sbv[r].astype(np.float32)
         print(f"  [{s}] dense ...")
         qe = model.encode(qt, batch_size=d.get("batch_size", 256), show_progress_bar=True,
                           normalize_embeddings=True, convert_to_numpy=True).astype(np.float32)

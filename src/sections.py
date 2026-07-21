@@ -363,11 +363,24 @@ def _fit(est, fam, use_w, X, y, w):
     return est
 
 
+MIN_QUERIES_PER_BIN = 50   # safety floor: each calibration bin needs enough
+                           # queries to estimate its best alpha reliably. On a
+                           # small dataset an inherited large n_bins would starve
+                           # the bins (~8 queries/bin on scifact) and the table
+                           # stops transferring to test -- a significant loss.
+                           # Capping bins so >=50 queries each degrades gracefully
+                           # to the constant baseline (1 bin) rather than failing.
+
+
 def fit_calibration(scores, curve, grid, n_bins):
     """HISTOGRAM BINNING: the model output is only a SCORE used to bin queries;
     each bin emits the alpha maximising ITS average NDCG curve. If the model has
     no signal every bin's curve equals the global one, so every bin picks the
-    same alpha -> exactly the constant baseline. That is the floor."""
+    same alpha -> exactly the constant baseline. That is the floor.
+
+    n_bins is capped by MIN_QUERIES_PER_BIN so small datasets fall back to fewer
+    (or one) bins instead of over-binning into noise."""
+    n_bins = max(1, min(int(n_bins), len(scores) // MIN_QUERIES_PER_BIN))
     edges = np.quantile(scores, np.linspace(0, 1, n_bins + 1))
     inner = np.unique(edges[1:-1])
     idx = np.digitize(scores, inner)
