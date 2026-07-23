@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 import pandas as pd
 
-from utils import load_config, get_paths, dataset_dir
+from utils import load_config, get_paths, dataset_dir, eval_split_of
 import pipeline as P
 import sections as S
 from core import read_qrels
@@ -63,6 +63,10 @@ def run_cell(cell, cfg, paths, log_dir):
     c = json.loads(json.dumps(cfg))            # deep copy so the caller's cfg is untouched
     c["dataset"] = ds
     c["fusion"] = {**c["fusion"], **fu}
+    # a large corpus can override the embedding dtype to halve the memmap
+    ov = (st.get("overrides") or {}).get(ds) or {}
+    if ov.get("embedding_dtype"):
+        c["dense"]["embedding_dtype"] = ov["embedding_dtype"]
     if not cell["is_dev"]:
         c.setdefault("study", {})["inherit_spec_from"] = st["development_dataset"]
 
@@ -98,11 +102,11 @@ def run_cell(cell, cfg, paths, log_dir):
         return "done", "ok"
 
 
-def cell_iqr(paths, ds, tag):
+def cell_iqr(paths, ds, tag, eval_split="test"):
     """Oracle-alpha IQR on the non-test split (dev, else train) -- the H1 x-axis.
     Measuring it off-test means it predicts the test gain rather than being read
     from the same data."""
-    _, _, sel = S.resolve_splits(paths, ds)
+    _, _, sel = S.resolve_splits(paths, ds, eval_split)
     p = os.path.join(paths["feature_dataset"], f"{ds}_{tag}_{sel}_features.csv")
     if not os.path.exists(p):
         return np.nan
@@ -134,7 +138,8 @@ def aggregate(cfg, paths):
                 continue
             head = oracle["ndcg10"] - base["ndcg10"]
             rows.append(dict(
-                dataset=ds, fusion=tag, alpha_iqr=round(cell_iqr(paths, ds, tag), 4),
+                dataset=ds, fusion=tag,
+                alpha_iqr=round(cell_iqr(paths, ds, tag, eval_split_of(cfg, ds)), 4),
                 role="dev" if ds == st["development_dataset"] else "held-out",
                 n_queries=b["n_queries"],
                 bm25=tbl.get("BM25", {}).get("ndcg10", np.nan),

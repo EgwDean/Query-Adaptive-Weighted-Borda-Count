@@ -53,6 +53,19 @@ def dataset_dir(paths, name):
     return os.path.join(paths["datasets"], name)
 
 
+def dataset_overrides(cfg, name):
+    """Per-dataset settings from study.overrides, so one outsized dataset can
+    differ (dtype, eval split, query cap) without forking the config."""
+    return ((cfg.get("study") or {}).get("overrides") or {}).get(name) or {}
+
+
+def eval_split_of(cfg, name):
+    """The split section 9 scores. Defaults to test; a dataset whose BEIR test
+    split is too small to power a benchmark (msmarco has 43 queries) remaps to
+    dev, and dev is then excluded from fitting and selection."""
+    return dataset_overrides(cfg, name).get("eval_split", "test")
+
+
 def build_doc_text(doc):
     """BEIR docs are {'title': ..., 'text': ...}; concatenate when titled. Shared
     across sections so document text is built identically everywhere."""

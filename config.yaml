@@ -170,7 +170,18 @@ rescreen:
 # quora is the NEGATIVE CONTROL: H1 predicts ~zero gain there.
 study:
   development_dataset: hotpotqa
-  datasets: [hotpotqa, nfcorpus, fever, scifact, fiqa, quora]
+  datasets: [hotpotqa, nfcorpus, fever, scifact, fiqa, quora, msmarco]
+
+  # Per-dataset deviations. msmarco is an outlier on every axis: 8.8M docs, and
+  # BEIR ships its `test` split as the 43-query TREC-DL subset, far too small to
+  # benchmark on -- the community evaluates on dev (6,980 queries) instead.
+  # Remapping eval to dev excludes dev from fitting, so train is carved into
+  # disjoint fit/select halves (see load_fit_eval).
+  overrides:
+    msmarco:
+      eval_split: dev          # test is 43 queries; benchmark on dev
+      embedding_dtype: float16 # 8.8M x 768: 13.5 GB instead of 27 GB
+      max_fit_queries: 40000   # of 502,939; router.train_subset only uses 10k
   fusions:
     - {function: score, normalizer: minmax}
     - {function: rrf}

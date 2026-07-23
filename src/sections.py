@@ -27,7 +27,7 @@ from sklearn.linear_model import ElasticNet, LogisticRegression
 from sklearn.neural_network import MLPRegressor, MLPClassifier
 import joblib
 
-from utils import dataset_dir, processed_dir
+from utils import dataset_dir, processed_dir, dataset_overrides, eval_split_of
 from core import (N_THREADS, RRF_K, FUSERS, fuse_score, alpha_curve, ndcg, mrr,
                   recall_at, bootstrap_ci, paired_bootstrap, read_queries,
                   read_qrels, load_retrieval, fusion_arrays, topk_ids)
@@ -55,15 +55,18 @@ NO_SAMPLE_WEIGHT = {"mlp"}
 COST_CLASS = {"lookup": 1, "scores": 2, "embed": 3}
 
 
-def resolve_splits(paths, name):
-    """Available splits and which to fit / select on. Some BEIR datasets have no
-    train split (quora, dbpedia-entity); falling back to dev as the fit split is
-    safe in frozen mode, where dev only fits weights and the calibration table."""
+def resolve_splits(paths, name, eval_split="test"):
+    """Available splits and which to fit / select on. The eval split is excluded
+    so it is never fitted or selected on. Some BEIR datasets have no train split
+    (quora) or no dev (scifact), and a remapped eval split can consume dev
+    (msmarco); when that leaves only one candidate, sel == fit and load_fit_eval
+    carves a disjoint slice."""
     from utils import dataset_dir as _dd
     folder = _dd(paths, name)
     avail = [x for x in ("train", "dev", "test") if read_qrels(folder, x) is not None]
-    fit = "train" if "train" in avail else ("dev" if "dev" in avail else None)
-    sel = "dev" if ("dev" in avail and fit != "dev") else fit
+    cand = [x for x in avail if x != eval_split]
+    fit = "train" if "train" in cand else ("dev" if "dev" in cand else None)
+    sel = "dev" if ("dev" in cand and fit != "dev") else fit
     return avail, fit, sel
 
 
@@ -153,7 +156,7 @@ def sec_dataset(cfg, paths):
     alphas = np.round(np.arange(fu["alpha_min"], fu["alpha_max"] + 1e-9, fu["alpha_step"]), 4)
     N = top_k
 
-    avail, _, _ = resolve_splits(paths, name)
+    avail, _, _ = resolve_splits(paths, name, eval_split_of(cfg, name))
     splits = [s for s in splits if s in avail]
     need = [s for s in splits
             if not (os.path.exists(os.path.join(fd, f"{name}_{tag}_{s}_features.csv")) and
@@ -435,7 +438,7 @@ def _router_ctx(cfg, paths, feats=None):
     tag = run_tag(cfg)
     grid = np.load(os.path.join(paths["feature_dataset"],
                                 f"{name}_{tag}_alpha_grid.npy")).astype(np.float64)
-    _, fit_s, sel_s = resolve_splits(paths, name)
+    _, fit_s, sel_s = resolve_splits(paths, name, eval_split_of(cfg, name))
     tr, trc, dv, dvc, carved = load_fit_eval(paths, name, fit_s, sel_s, tag, seed)
     if carved:
         print(f"  {name}: only one non-test split ({fit_s}); carved a disjoint "
@@ -798,9 +801,10 @@ def sec_benchmark(cfg, paths):
 
     # Tune the global-alpha baselines on the non-test split (dev if present, else
     # train) -- the same split the router's weights and calibration were fit on.
-    _, _, tune_split = resolve_splits(paths, name)
+    eval_s = eval_split_of(cfg, name)
+    _, _, tune_split = resolve_splits(paths, name, eval_s)
     lists = {}
-    for s in (tune_split, "test"):
+    for s in (tune_split, eval_s):
         qids, bi, bv, di, dv_, _ = load_retrieval(paths, name, s, top_k)
         qr = read_qrels(folder, s)
         lists[s] = (qids, qr, bi, bv, di, dv_)
@@ -821,19 +825,19 @@ def sec_benchmark(cfg, paths):
                          rels, eval_k)
                 tot[j] += v or 0.0
         return float(alphas[int(tot.argmax())])
-    print("  tuning global alphas on dev ...")
+    print(f"  tuning global alphas on {tune_split} ...")
     a_sc, a_bo, a_rr = tune("score", norm), tune("borda", None), tune("rrf", None)
     print(f"  score a*={a_sc:.2f} | borda a*={a_bo:.2f} | rrf a*={a_rr:.2f}")
 
     # dtype=str: numeric qids would otherwise be read as int64 and never match
     # the string qids from retrieval, giving an empty feature set.
     tdf = pd.read_csv(os.path.join(paths["feature_dataset"],
-                                   f"{name}_{tag}_test_features.csv"),
+                                   f"{name}_{tag}_{eval_s}_features.csv"),
                       dtype={"qid": str}).set_index("qid")
-    qids, qr, bi, bv, di, dv_ = lists["test"]
+    qids, qr, bi, bv, di, dv_ = lists[eval_s]
     keep = [q for q in qids if q in tdf.index]
     if not keep:
-        raise SystemExit(f"[benchmark] no test qids matched {name}_{tag} features "
+        raise SystemExit(f"[benchmark] no {eval_s} qids matched {name}_{tag} features "
                          f"(retrieval vs feature-CSV qid mismatch).")
     X = tdf.loc[keep, R["features"]].to_numpy(float)
     t = time.perf_counter()
@@ -866,7 +870,7 @@ def sec_benchmark(cfg, paths):
 
     acc = {m[0]: {k: [] for k in ("ndcg10", "ndcg100", "mrr100", "recall100")} for m in METHODS}
     used = []
-    for i, q in enumerate(tqdm(qids, desc="  scoring test")):
+    for i, q in enumerate(tqdm(qids, desc=f"  scoring {eval_s}")):
         rels = {d: int(g) for d, g in qr.get(q, {}).items() if int(g) > 0}
         if not rels:
             continue

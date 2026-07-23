@@ -43,7 +43,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 from tqdm import tqdm
 
-from utils import load_config, get_paths, dataset_dir, processed_dir, build_doc_text
+from utils import (load_config, get_paths, dataset_dir, processed_dir, build_doc_text,
+                   dataset_overrides, eval_split_of)
 from core import (N_THREADS, RRF_K, FUSERS, read_corpus_texts, read_queries,
                   read_qrels, load_retrieval, ndcg)
 
@@ -286,9 +287,21 @@ def sec_retrieve(cfg, paths):
     gc.collect()
     corpus_emb = np.load(os.path.join(pdir, "corpus_emb.npy"), mmap_mode="r")
 
+    # The router trains on router.train_subset queries, so retrieving every query
+    # of a huge fit split is wasted work (msmarco ships 502,939 train queries).
+    # Cap non-eval splits; the eval split is always retrieved in full.
+    cap = int(dataset_overrides(cfg, name).get("max_fit_queries", 0) or 0)
+    eval_s = eval_split_of(cfg, name)
+    seed = int(cfg.get("seed", 42))
+
     for s in todo:
         qr = read_qrels(folder, s)
         qids = [q for q in queries if q in qr and qr[q]]
+        if cap and s != eval_s and len(qids) > cap:
+            idx = np.sort(np.random.default_rng(seed).choice(len(qids), cap, replace=False))
+            qids = [qids[i] for i in idx]
+            print(f"  [{s}] capped {len(qr):,} -> {cap:,} queries "
+                  f"(study.overrides.{name}.max_fit_queries)")
         qt = [queries[q] for q in qids]
         print(f"  [{s}] {len(qids):,} queries: BM25 ...")
         kk = min(top_k, len(cid))
