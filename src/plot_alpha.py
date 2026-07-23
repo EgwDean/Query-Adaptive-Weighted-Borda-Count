@@ -1,21 +1,17 @@
-"""plot_alpha.py -- boxplots of the oracle alpha distribution per dataset.
+"""Boxplots of the oracle alpha distribution per dataset.
 
-    python src/plot_alpha.py                 # all study datasets x all fusions
-    python src/plot_alpha.py --split test    # only the test split's queries
-    python src/plot_alpha.py --fusion score-minmax   # one fusion only
+    python src/plot_alpha.py                          # all datasets x fusions
+    python src/plot_alpha.py --split test             # test-split queries only
+    python src/plot_alpha.py --fusion score-minmax    # one fusion only
 
-Reads the oracle alpha label straight from the section-4 feature CSVs
-(data/results/feature_dataset/<ds>_<tag>_<split>_features.csv), so the plots
-reflect the CURRENT pipeline (tuned BM25, top-1000, the chosen fusion) rather
-than the stale Phase-1 alpha_distribution/ files.
-
-Alpha = per-query oracle fusion weight: 1 = pure lexical (BM25), 0 = pure dense.
-Its SPREAD (IQR) is the H1 axis -- how much per-query routing can possibly help.
+Reads the oracle alpha label from the section-4 feature CSVs. Alpha is the
+per-query oracle fusion weight (1 = pure lexical, 0 = pure dense); its IQR is the
+per-query routing headroom that H1 tests against.
 
 Outputs (data/results/alpha_distribution/):
-    oracle_alpha_summary.csv              -- n / median / mean / std / IQR per (dataset, fusion)
-    oracle_alpha_boxplot_<tag>.png        -- one box per dataset, for each fusion
-    oracle_alpha_boxplot_grouped.png      -- datasets x fusions on one axis
+    oracle_alpha_summary.csv         n / median / mean / std / IQR per (ds, fusion)
+    oracle_alpha_boxplot_<tag>.png   one box per dataset, per fusion
+    oracle_alpha_boxplot_grouped.png datasets x fusions on one axis
 """
 
 import os
@@ -66,7 +62,7 @@ def main():
     outdir = paths.get("alpha_results") or os.path.join(paths["results"], "alpha_distribution")
     os.makedirs(outdir, exist_ok=True)
 
-    datasets = cfg["study"]["datasets"]                  # already ordered by spread
+    datasets = cfg["study"]["datasets"]                  # ordered by alpha spread
     tags = [fusion_tag(f) for f in cfg["study"]["fusions"]]
     if args.fusion:
         tags = [args.fusion]

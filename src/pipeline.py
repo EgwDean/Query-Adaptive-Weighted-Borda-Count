@@ -1,42 +1,33 @@
-"""pipeline.py -- Query-Adaptive Score Fusion: the entire pipeline, one command.
+"""Query-adaptive score fusion pipeline (sections 0-3 live here; 4-9 in sections.py).
 
-    python src/pipeline.py                 # run everything, skipping finished sections
+    python src/pipeline.py                 # run all, skipping finished sections
     python src/pipeline.py --from 4        # force re-run from section 4 onward
     python src/pipeline.py --only 5        # run just one section
 
-METHOD
-------
-Two retrievers (tuned BM25, all-mpnet-base-v2) are fused by a CONVEX COMBINATION
+Two retrievers (tuned BM25, all-mpnet-base-v2) are fused by a convex combination
 of per-query min-max normalised scores:
 
     fuse(d) = alpha * norm(bm25_score(d)) + (1-alpha) * norm(dense_score(d))
 
-alpha = 1 -> pure lexical, alpha = 0 -> pure semantic. Convex score fusion is
-used (rather than rank fusion like RRF/Borda) because rank-based fusion discards
-score MAGNITUDE -- the information that says "doc A and B are both excellent,
-C is junk" -- keeping only position. See Bruch, Gai & Ingber, "An Analysis of
-Fusion Functions for Hybrid Retrieval", ACM TOIS 2023.
+alpha = 1 is pure lexical, alpha = 0 pure semantic. Score fusion keeps score
+magnitude, which rank fusion (RRF, Borda) discards; see Bruch, Gai & Ingber,
+TOIS 2023. RRF and Borda are included only as baselines. The question under test
+is whether a per-query alpha from a cheap router beats the best global alpha.
 
-CLAIM UNDER TEST: a per-query alpha, predicted by a cheap router, beats the best
-single GLOBAL alpha. Rank-fusion methods (RRF, Borda) appear only as standard
-baselines, not as a contribution.
-
-SECTIONS (each writes files; re-running skips any section whose outputs exist)
-------------------------------------------------------------------------------
+Sections (each skips when its outputs already exist):
   0 download   BEIR dataset
   1 embed      corpus + query embeddings (memmap, sharded)
   2 tune_bm25  grid-search k1/b/stemming by NDCG@eval_k
-  3 retrieve   BM25 + dense top-k WITH RAW SCORES, cached per split
+  3 retrieve   BM25 + dense top-k with raw scores, cached per split
   4 dataset    router features + alpha->NDCG curve + oracle alpha label
-  5 screen     model families x framings x decision rules  (Optuna, on dev)
+  5 screen     model families x framings x decision rules (Optuna, on dev)
   6 ablate     greedy backward feature elimination
   7 rescreen   families x framings x feature sets
-  8 final_fit  refit the winner on the full train split and FREEZE it
-  9 benchmark  all baselines vs the router on TEST -- run once
+  8 final_fit  refit the winner on the full train split and freeze it
+  9 benchmark  all baselines vs the router on test (run once)
 
-Section 3 caches the ranked lists and raw scores separately from the fusion, so
-changing the fusion function only re-runs section 4 (minutes), not retrieval
-(hours).
+Section 3 caches ranked lists and raw scores independently of the fusion, so
+changing the fusion function re-runs only section 4 onward, not retrieval.
 """
 
 import os
@@ -203,9 +194,8 @@ def dense_topk(q_emb, corpus_emb, top_k, dev, dtype, chunk, qbatch):
         except torch.cuda.OutOfMemoryError:
             Cg = None
             torch.cuda.empty_cache()
-    # The similarity block is ALWAYS chunked over the corpus: Q @ C.T over 5.2M
-    # docs would be ~40 GB for a 2048-query batch. Preloading only avoids
-    # re-reading the corpus per batch.
+    # Chunk Q @ C.T over the corpus; the full product is too large to
+    # materialise. Preloading the corpus to GPU only avoids re-reading it.
     for qs in tqdm(range(0, nq, qbatch), desc="  dense", leave=False):
         qe = min(qs + qbatch, nq)
         Q = torch.from_numpy(np.ascontiguousarray(q_emb[qs:qe])).to(dev).to(dtype)
@@ -252,9 +242,8 @@ def sec_retrieve(cfg, paths):
     def cache_p(s):
         return os.path.join(pdir, f"retrieval_{s}_top{top_k}.npz")
 
-    # A cache written before q_emb was added holds valid BM25/dense results but
-    # no query embeddings. Re-encoding queries takes seconds, so REPAIR those
-    # instead of re-running retrieval (which would cost ~15 min for dev+test).
+    # Caches written before q_emb was added hold valid ranked lists but no query
+    # embeddings; re-encode the queries and keep the lists rather than re-retrieve.
     todo, repair = [], []
     for s in splits:
         if read_qrels(folder, s) is None:
@@ -303,10 +292,10 @@ def sec_retrieve(cfg, paths):
         qt = [queries[q] for q in qids]
         print(f"  [{s}] {len(qids):,} queries: BM25 ...")
         kk = min(top_k, len(cid))
-        # bm25s raises IndexError on a query that tokenises to ZERO terms
-        # (all-stopword / punctuation queries -- nfcorpus has some). Retrieve only
-        # the non-empty queries; give empty ones an all-zero BM25 row, which
-        # min-max-normalises to 0 so fusion correctly falls back to dense.
+        # bm25s errors on a query that tokenises to zero terms (all-stopword
+        # queries, present in nfcorpus). Retrieve only the non-empty queries and
+        # give the rest an all-zero BM25 row; fusion drops zero-score docs, so
+        # those queries fall back to dense (see core._present).
         qtoks = bm25s.tokenize(qt, stopwords="en", stemmer=st, show_progress=False,
                                return_ids=False)
         bi = np.tile(np.arange(kk, dtype=np.int64), (len(qids), 1))

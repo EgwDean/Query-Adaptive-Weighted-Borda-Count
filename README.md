@@ -1,110 +1,146 @@
 # Query-Adaptive Score Fusion
 
-Hybrid retrieval that fuses a **lexical** and a **semantic** retriever with a
-**convex combination of normalised scores**, where the fusion weight `alpha` is
-predicted **per query** by a cheap router instead of being fixed globally.
+A study of query-adaptive fusion in hybrid retrieval: **when a per-query fusion
+weight helps, why it usually does not, and how to deploy it safely.**
+
+Two retrievers — BM25 (lexical) and `all-mpnet-base-v2` (dense) — are combined by
+a convex combination of per-query min-max normalised scores:
 
 ```
-fuse(d) = alpha * norm(bm25_score(d)) + (1 - alpha) * norm(dense_score(d))
+fuse(d) = α · norm(bm25_score(d))  +  (1 − α) · norm(dense_score(d))
 ```
 
-* `alpha = 1` → pure **BM25** (lexical) · `alpha = 0` → pure **dense** (semantic)
-* `norm` = per-query min-max over each retriever's own top-k
+`α = 1` is pure lexical, `α = 0` pure semantic. A cheap **router** predicts `α`
+per query. The question is whether that per-query `α` beats the best single
+global `α`.
 
-**Claim under test:** a per-query `alpha` beats the best single **global**
-`alpha`.
+Score fusion is primary; RRF and Borda appear only as baselines (that score
+fusion keeps magnitude and rank fusion discards it is settled — Bruch, Gai &
+Ingber, *An Analysis of Fusion Functions for Hybrid Retrieval*, TOIS 2023).
 
-**Why score fusion and not RRF/Borda?** Rank fusion keeps only *position* and
-throws away score *magnitude* — the information that says "doc A and B are both
-excellent, C is junk", not merely "A > B > C". This is a settled point in the
-literature (Bruch, Gai & Ingber, *An Analysis of Fusion Functions for Hybrid
-Retrieval*, ACM TOIS 2023), **not** a contribution of this work. RRF and Borda
-appear only as standard baselines.
+## Findings
 
----
+The study covers **6 BEIR datasets × 3 fusion functions**. `hotpotqa` is the
+development dataset; the other five are held out and inherit its frozen router
+spec (only weights and the calibration table are refit).
+
+- **H2 — a router's raw output is not a fusion weight.** Across 18 model
+  configurations, *no* raw-output router beats the best constant `α` (best
+  0.669 vs constant 0.691); *every* calibrated router does (18/18). Histogram-
+  binning calibration re-maps the model's ranking onto the `α` axis and, with no
+  signal, degrades exactly to the constant — so it cannot do worse. This is the
+  main methodological result.
+- **H1 — gain grows with retriever complementarity.** Across held-out cells,
+  `corr(oracle-α spread, gain) = +0.60`. Complementarity is necessary but not
+  sufficient: high spread makes gain available, but realising it also needs
+  data (fever, 6.6k queries: +0.053 significant; nfcorpus, 323 queries: +0.005
+  n.s.). Zero spread reliably means no gain — quora is significantly negative.
+- **H3 — the pattern is fusion-invariant.** The same shape holds under score,
+  RRF, and Borda.
+
+Per-dataset results under the primary score fusion (NDCG@10 on test):
+
+| dataset            | constant α | router | oracle | gain     | sig. |
+|--------------------|-----------:|-------:|-------:|---------:|:----:|
+| hotpotqa (dev)     | 0.6747     | 0.6810 | 0.7238 | +0.0063  | yes  |
+| fever              | 0.7285     | 0.7375 | 0.8057 | +0.0089  | yes  |
+| nfcorpus           | 0.3743     | 0.3727 | 0.4211 | −0.0016  | no   |
+| scifact            | 0.7324     | 0.7289 | 0.7885 | −0.0035  | no   |
+| fiqa               | 0.5128     | 0.5146 | 0.5787 | +0.0017  | no   |
+| quora              | 0.9013     | 0.8986 | 0.9346 | −0.0027  | yes  |
+
+`gain` is router − constant α; `sig.` is a paired bootstrap of the per-query
+NDCG@10 difference **on test** (95% CI excluding zero). quora's significant
+*negative* gain is the negative control: with zero oracle-α spread there is
+nothing to route on, and 10k queries are enough to detect the small harm.
 
 ## Run it
 
-Everything is one command. Each section skips if its outputs already exist.
+The whole study is one command. Every section skips when its outputs already
+exist, so a run is resumable.
 
 ```bash
-python src/pipeline.py            # run all sections
-python src/pipeline.py --from 4   # force re-run from section 4 onward
+# 1. environment (Linux / CUDA box; Ubuntu 24.04 needs a venv)
+python3 -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip
+pip install torch==2.3.1 --index-url https://download.pytorch.org/whl/cu121   # CPU: drop the index-url
+pip install -r requirements.txt
+
+# 2. run the full (dataset × fusion) matrix, unattended
+python src/run_study.py                 # resumable; --status / --dry-run / --aggregate-only
+
+# 3. figures + supporting experiments
+python src/plot_alpha.py --split test   # oracle-α boxplots
+python src/h2_decision_rule.py          # the raw-vs-calibrated table (H2)
+python src/make_slides.py               # slides/query_adaptive_fusion.pptx
+```
+
+Long jobs on a shared box: run inside `tmux` (survives disconnects) and keep
+`router.n_jobs` at 8 — `-1` oversubscribes a many-core machine and stalls.
+
+### Single-dataset pipeline
+
+`run_study.py` drives the pipeline per cell; you can also run it directly:
+
+```bash
+python src/pipeline.py            # all sections for config.yaml's dataset/fusion
+python src/pipeline.py --from 4   # re-run from section 4 onward
 python src/pipeline.py --only 9   # a single section
 ```
 
 | # | Section | Writes |
 |---|---------|--------|
-| 0 | `download` | `data/datasets/<ds>/` |
-| 1 | `embed` | `corpus_emb.npy` (memmap, sharded) |
-| 2 | `tune_bm25` | `results/bm25_tuning/` *(off by default; values already tuned)* |
-| 3 | `retrieve` | `retrieval_{split}_top1000.npz` — ranked lists **+ raw scores** |
-| 4 | `dataset` | router features + **alpha→NDCG curve** + oracle `alpha` label |
-| 5 | `screen` | model families × framings (Optuna, selected on dev) |
-| 6 | `ablate` | greedy backward feature elimination |
-| 7 | `rescreen` | families × framings × feature-set sizes |
-| 8 | `final_fit` | refit on the full train split → **frozen** `router.joblib` |
-| 9 | `benchmark` | all baselines vs the router on **test — opened once** |
+| 0 | download   | `data/datasets/<ds>/` |
+| 1 | embed      | `corpus_emb.npy` (memmap, sharded) |
+| 2 | tune_bm25  | `results/bm25_tuning/` *(off by default; values pre-tuned)* |
+| 3 | retrieve   | `retrieval_{split}_top1000.npz` — ranked lists **+ raw scores** |
+| 4 | dataset    | router features + **α→NDCG curve** + oracle `α` label |
+| 5 | screen     | model families × framings (Optuna, on dev) |
+| 6 | ablate     | greedy backward feature elimination |
+| 7 | rescreen   | families × framings × feature-set sizes |
+| 8 | final_fit  | refit on the full train split → **frozen** `router.joblib` |
+| 9 | benchmark  | all baselines vs the router on **test — opened once** |
 
-**Section 3 is cached and fusion-independent.** Changing `fusion.function` only
-re-runs section 4 onward (minutes), never retrieval (hours).
-
----
+Section 3 is cached and fusion-independent, so changing the fusion re-runs only
+section 4 onward, not retrieval.
 
 ## Layout
 
 ```
-config.yaml            # every setting, documented inline
+config.yaml            every setting, documented inline
 src/
-  pipeline.py          # ENTRY POINT: orchestration + sections 0-3
-  core.py              # BEIR I/O, metrics, fusion functions, alpha curve, bootstrap
-  sections.py          # sections 4-9 (dataset -> router -> benchmark)
-  utils.py             # config + path helpers
+  pipeline.py          entry point: orchestration + sections 0-3
+  sections.py          sections 4-9 (dataset → router → benchmark)
+  core.py              BEIR I/O, metrics, fusion functions, α curve, bootstrap
+  utils.py             config + path helpers
+  run_study.py         the full (dataset × fusion) study runner
+  h2_decision_rule.py  the H2 experiment (raw vs calibrated)
+  plot_alpha.py        oracle-α boxplots
+  make_slides.py       builds the presentation deck
 data/
-  datasets/<ds>/       # raw BEIR
-  processed_data/<ds>/ # embeddings + cached retrieval
-  results/             # bm25_tuning, feature_dataset, router_screening, router_final
+  datasets/<ds>/       raw BEIR
+  processed_data/<ds>/ embeddings + cached retrieval
+  results/             bm25_tuning, feature_dataset, router_screening, router_final,
+                       alpha_distribution
+slides/                generated .pptx + figures
 ```
-
----
 
 ## Method notes
 
-* **Metric:** NDCG@10 (`retrieval.eval_k`). Candidate pool `top_k=1000`
-  (BEIR practice: retrieve deep, evaluate shallow).
-* **Split discipline:** fit on **train**, select on **dev** (family,
-  hyperparameters, features — everything), open **test exactly once** in
-  section 9.
-* **The alpha→NDCG curve** stores NDCG at all 101 alphas for every query. Any
-  predicted alpha can then be scored by table lookup instead of re-running
-  retrieval — and it yields `alpha_sensitivity` (max−min), used as a sample
-  weight so queries whose curve is flat don't train the model on labels that are
-  pure tie-break artifacts.
-* **Decision rule = histogram binning.** A model's raw output is a proxy or a
-  probability, *not* a fusion weight; used directly it loses to the constant
-  baseline. Instead the output only **ranks** queries into bins, and each bin
-  emits the alpha maximising its average NDCG curve (learned on a held-out slice
-  of train). With no signal every bin picks the same alpha → exactly the
-  constant baseline, so this rule **cannot do worse**.
-* **Selection under ties:** results cluster tightly, so among configs
-  statistically tied with the best (paired bootstrap) we take the **cheapest** —
-  fewest features, then lowest inference-cost class.
-* **Threads:** `n_jobs=-1` (=32) oversubscribes and **hangs** on a shared box.
-  Capped to 8 via `PIPE_THREADS`; never set `-1`.
-
----
+- **Metric:** NDCG@10 (`retrieval.eval_k`); candidate pool `top_k = 1000`.
+- **Splits:** fit on train, select on dev (family, hyperparameters, features),
+  open test exactly once (section 9). Held-out datasets select nothing.
+- **Oracle α curve:** NDCG at all 101 alphas per query, stored so any predicted
+  α is scored by table lookup; its max−min gives the sample weight that
+  down-weights queries whose curve is flat.
+- **Decision rule = histogram binning:** the model output only ranks queries into
+  bins; each bin emits the α maximising its average NDCG curve. A
+  `MIN_QUERIES_PER_BIN` floor prevents starved bins on small datasets.
+- **Significance:** paired bootstrap of the per-query NDCG@10 difference.
 
 ## Documentation
 
-* [docs/comparison_methods.md](docs/comparison_methods.md) — the baselines
-* [docs/ltr_router_features.md](docs/ltr_router_features.md) — QPP/routing feature catalogue
-* [docs/inference_feature_inventory.md](docs/inference_feature_inventory.md) — which features are inference-time computable
-* [docs/bm25_parameter_history.md](docs/bm25_parameter_history.md) — BM25 params + metric changes per run
-
----
-
-## Status
-
-Pipeline rebuilt around convex score fusion; sections 0–3 reuse the existing
-cached corpus embeddings and BM25 tuning. **No results yet under this fusion** —
-sections 4–9 need a run.
+- [docs/comparison_methods.md](docs/comparison_methods.md) — baselines
+- [docs/ltr_router_features.md](docs/ltr_router_features.md) — router feature catalogue
+- [docs/inference_feature_inventory.md](docs/inference_feature_inventory.md) — inference-time feature computation
+- [docs/bm25_parameter_history.md](docs/bm25_parameter_history.md) — BM25 parameter / metric history

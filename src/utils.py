@@ -54,11 +54,8 @@ def dataset_dir(paths, name):
 
 
 def build_doc_text(doc):
-    """BEIR docs are {'title': ..., 'text': ...}; concatenate when titled.
-
-    Shared by embed.py / tune_bm25.py / alpha_distribution.py / create_dataset.py
-    so every stage builds document text identically.
-    """
+    """BEIR docs are {'title': ..., 'text': ...}; concatenate when titled. Shared
+    across sections so document text is built identically everywhere."""
     title = (doc.get("title") or "").strip()
     text = (doc.get("text") or "").strip()
     return (title + " " + text).strip() if title else text

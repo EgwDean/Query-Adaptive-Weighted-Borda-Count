@@ -1,0 +1,23 @@
+{
+  "config": "f3|logreg|multibin",
+  "family": "logreg",
+  "framing": "multibin",
+  "params": {
+    "penalty": "elasticnet",
+    "C": 1.2555870152029216,
+    "l1_ratio": 0.3794605621813536,
+    "use_sample_weight": true,
+    "scaler": "robust",
+    "decision_rule": "calibrated",
+    "n_calib_bins": 20
+  },
+  "features": [
+    "margin_bm25",
+    "entropy_bm25",
+    "smv_dense"
+  ],
+  "n_features": 3,
+  "dev_ndcg": 0.6974568963050842,
+  "nominal_best": "f10|logreg|multibin",
+  "nominal_best_ndcg": 0.6982526779174805
+}

@@ -1,0 +1,22 @@
+{
+  "config": "f3|logreg|binary",
+  "family": "logreg",
+  "framing": "binary",
+  "params": {
+    "penalty": "l2",
+    "C": 0.0009191398638626527,
+    "use_sample_weight": true,
+    "scaler": "standard",
+    "decision_rule": "calibrated",
+    "n_calib_bins": 20
+  },
+  "features": [
+    "ql",
+    "sigma_k_dense",
+    "d_entropy"
+  ],
+  "n_features": 3,
+  "dev_ndcg": 0.6770703196525574,
+  "nominal_best": "f3|logreg|binary",
+  "nominal_best_ndcg": 0.6770703196525574
+}

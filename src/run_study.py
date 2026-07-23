@@ -1,31 +1,18 @@
-"""run_study.py -- run the WHOLE multi-dataset study unattended, one command.
+"""Run the full (dataset x fusion) study matrix from config.yaml -> `study`.
 
-    nohup python src/run_study.py > study.out 2>&1 &     # fire and forget
-    python src/run_study.py --dry-run                    # print the matrix, run nothing
-    python src/run_study.py --status                     # what is done so far
+    nohup python src/run_study.py > study.out 2>&1 &   # run unattended
+    python src/run_study.py --dry-run                  # print the matrix only
+    python src/run_study.py --status                   # progress so far
+    python src/run_study.py --aggregate-only           # rebuild the summary table
 
-Walks the full matrix of (dataset x fusion function) cells defined in
-config.yaml -> `study`, running the pipeline sections for each. Designed to be
-left alone for a day or two:
+Resumable (sections skip when their outputs exist) and fault-tolerant (a failing
+cell is logged and the run continues). Per-cell logs go to results/study_logs/.
 
-  * RESUMABLE -- every section already skips when its outputs exist, so a
-    killed/crashed run picks up exactly where it stopped. Just re-launch.
-  * FAULT-TOLERANT -- a failing cell is logged and the run moves on, so one bad
-    dataset cannot cost you the other fourteen.
-  * LOGGED -- per-cell logs under results/study_logs/, plus a status table you
-    can check in a few seconds.
-
-Protocol
---------
-The DEVELOPMENT dataset runs the full pipeline (sections 0-9): screening,
-ablation and re-screening happen there, and that is where the method is
-designed. Every HELD-OUT dataset runs only sections 0-4, 8, 9 and INHERITS the
-router spec (family / framing / hyperparameters / feature set) chosen on the
-development dataset -- so nothing is ever selected on held-out data. Only the
-model weights and the calibration table are refit per dataset.
-
-Datasets with no `train` split (quora, dbpedia-entity, ...) fit on `dev`
-instead; harmless in frozen mode because no selection happens.
+The development dataset runs the full pipeline (sections 0-9), including model
+and feature selection. Held-out datasets run only sections 0-4, 8, 9 and inherit
+the development dataset's router spec; only weights and the calibration table are
+refit, so nothing is selected on held-out data. Datasets without a train split
+fit on dev instead (harmless here since no selection happens).
 """
 
 import os
@@ -63,7 +50,7 @@ def build_matrix(cfg):
         for fu in st["fusions"]:
             cells.append(dict(dataset=ds, fusion=fu, tag=fusion_tag(fu),
                               is_dev=(ds == dev_ds)))
-    # development dataset first: the held-out cells inherit its router spec
+    # development dataset first so held-out cells can inherit its spec
     cells.sort(key=lambda c: (not c["is_dev"], c["dataset"], c["tag"]))
     return cells
 
@@ -73,7 +60,7 @@ def run_cell(cell, cfg, paths, log_dir):
     ds, fu, tag = cell["dataset"], cell["fusion"], cell["tag"]
     st = cfg["study"]
 
-    c = json.loads(json.dumps(cfg))            # deep copy; never mutate the caller's cfg
+    c = json.loads(json.dumps(cfg))            # deep copy so the caller's cfg is untouched
     c["dataset"] = ds
     c["fusion"] = {**c["fusion"], **fu}
     if not cell["is_dev"]:
@@ -112,10 +99,9 @@ def run_cell(cell, cfg, paths, log_dir):
 
 
 def cell_iqr(paths, ds, tag):
-    """Oracle-alpha IQR for this cell, measured on the NON-TEST split (dev, else
-    train). This is the H1 x-axis: complementarity measured WITHOUT touching test,
-    under the same fusion as the gain -- so it 'predicts' the test gain rather
-    than being read off the same data."""
+    """Oracle-alpha IQR on the non-test split (dev, else train) -- the H1 x-axis.
+    Measuring it off-test means it predicts the test gain rather than being read
+    from the same data."""
     _, _, sel = S.resolve_splits(paths, ds)
     p = os.path.join(paths["feature_dataset"], f"{ds}_{tag}_{sel}_features.csv")
     if not os.path.exists(p):
@@ -126,7 +112,7 @@ def cell_iqr(paths, ds, tag):
 
 
 def aggregate(cfg, paths):
-    """Collect every finished cell into the study table (the H1 scaling figure)."""
+    """Collect every finished cell into the study summary table."""
     st = cfg["study"]
     rows = []
     for ds in st["datasets"]:
@@ -137,9 +123,7 @@ def aggregate(cfg, paths):
                 continue
             with open(jp, encoding="utf-8") as f:
                 b = json.load(f)
-            # the chosen router spec: lets us report FEATURE STABILITY across
-            # cells (with configs statistically tied, the exact set is
-            # interchangeable -- the signal FAMILY is the claim, not the names)
+            # chosen router spec, for the feature-frequency table across cells
             mp = os.path.join(paths["router_final"], f"{ds}_{tag}_router_meta.json")
             meta = json.load(open(mp, encoding="utf-8")) if os.path.exists(mp) else {}
             tbl = {r["method"]: r for r in b["table"]}
@@ -229,9 +213,8 @@ def main():
               "oracle", "headroom", "gain", "significant", "pct_headroom"]].to_string(index=False))
     print("\n[study] chosen router per cell:")
     print(df[["dataset", "fusion", "model", "n_features", "features"]].to_string(index=False))
-    # With configs statistically tied, the greedy ablation picks near-arbitrarily
-    # among equivalent feature sets -- so the claim is the signal FAMILY and the
-    # small COUNT, not the specific names. This frequency table is the evidence.
+    # Feature frequency across cells: with tied configs the exact set is
+    # interchangeable, so the signal family and count matter more than the names.
     from collections import Counter
     feats = Counter(f for row in df["features"].dropna() for f in row.split("|") if f)
     if feats:

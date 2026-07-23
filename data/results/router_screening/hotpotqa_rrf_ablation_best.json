@@ -1,0 +1,11 @@
+{
+  "n_features": 4,
+  "dev_ndcg": 0.6822648048400879,
+  "features": [
+    "ql",
+    "smv_dense",
+    "robust_sigma_dense",
+    "d_entropy"
+  ],
+  "full_ndcg": 0.6804957985877991
+}

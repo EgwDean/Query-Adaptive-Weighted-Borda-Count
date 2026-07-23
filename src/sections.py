@@ -1,9 +1,8 @@
-"""sections.py -- pipeline sections 4-9 (dataset build -> router -> benchmark).
+"""Pipeline sections 4-9 (dataset build -> router -> benchmark).
 
-Split out of pipeline.py purely for file size; `python src/pipeline.py` remains
-the single entry point. See pipeline.py's header for the method and the section
-list. Every function here takes (cfg, paths), writes its outputs, and returns a
-one-line status; each skips if its outputs already exist.
+Split out of pipeline.py for file size; `python src/pipeline.py` is still the
+entry point. Each function takes (cfg, paths), writes its outputs, returns a
+one-line status, and skips if those outputs already exist.
 """
 
 import os
@@ -57,13 +56,9 @@ COST_CLASS = {"lookup": 1, "scores": 2, "embed": 3}
 
 
 def resolve_splits(paths, name):
-    """Which splits this dataset actually has, and which to fit / select on.
-
-    Several BEIR datasets ship no `train` split (e.g. quora, dbpedia-entity are
-    dev+test only). Falling back to dev as the FIT split is safe in frozen-config
-    mode, where nothing is selected -- the router spec is inherited, so dev is
-    only used to fit weights and the calibration table.
-    """
+    """Available splits and which to fit / select on. Some BEIR datasets have no
+    train split (quora, dbpedia-entity); falling back to dev as the fit split is
+    safe in frozen mode, where dev only fits weights and the calibration table."""
     from utils import dataset_dir as _dd
     folder = _dd(paths, name)
     avail = [x for x in ("train", "dev", "test") if read_qrels(folder, x) is not None]
@@ -73,13 +68,9 @@ def resolve_splits(paths, name):
 
 
 def run_tag(cfg):
-    """Namespace for every section 4-9 output.
-
-    Outputs from section 4 onward depend on the FUSION FUNCTION (the alpha label,
-    the alpha->NDCG curve, and everything trained on them). Tagging keeps the
-    minmax / rrf / borda arms of the study separate, and stops artefacts written
-    by an earlier pipeline with a different schema from being silently reused.
-    """
+    """Output namespace for sections 4-9. Everything from section 4 on depends on
+    the fusion function (the alpha label, its NDCG curve, and models trained on
+    them), so tagging keeps the minmax / rrf / borda arms separate."""
     fu = cfg["fusion"]
     return f"score-{fu['normalizer']}" if fu["function"] == "score" else fu["function"]
 
@@ -363,23 +354,19 @@ def _fit(est, fam, use_w, X, y, w):
     return est
 
 
-MIN_QUERIES_PER_BIN = 50   # safety floor: each calibration bin needs enough
-                           # queries to estimate its best alpha reliably. On a
-                           # small dataset an inherited large n_bins would starve
-                           # the bins (~8 queries/bin on scifact) and the table
-                           # stops transferring to test -- a significant loss.
-                           # Capping bins so >=50 queries each degrades gracefully
-                           # to the constant baseline (1 bin) rather than failing.
+MIN_QUERIES_PER_BIN = 50   # a calibration bin needs enough queries to estimate
+                           # its best alpha; on a small dataset an inherited large
+                           # n_bins starves the bins and the table fails to
+                           # transfer. Capping to >=50 queries/bin falls back
+                           # toward the constant baseline instead.
 
 
 def fit_calibration(scores, curve, grid, n_bins):
-    """HISTOGRAM BINNING: the model output is only a SCORE used to bin queries;
-    each bin emits the alpha maximising ITS average NDCG curve. If the model has
-    no signal every bin's curve equals the global one, so every bin picks the
-    same alpha -> exactly the constant baseline. That is the floor.
-
-    n_bins is capped by MIN_QUERIES_PER_BIN so small datasets fall back to fewer
-    (or one) bins instead of over-binning into noise."""
+    """Histogram binning: the model output only bins queries, and each bin emits
+    the alpha maximising its average NDCG curve. With no signal every bin's curve
+    equals the global one, so all bins pick the same alpha (the constant
+    baseline), which is the floor. n_bins is capped by MIN_QUERIES_PER_BIN so
+    small datasets use fewer bins rather than over-binning into noise."""
     n_bins = max(1, min(int(n_bins), len(scores) // MIN_QUERIES_PER_BIN))
     edges = np.quantile(scores, np.linspace(0, 1, n_bins + 1))
     inner = np.unique(edges[1:-1])
@@ -663,7 +650,7 @@ def sec_rescreen(cfg, paths):
                 _, pred, _ = _refit_best(c, fam, fr, st.best_trial.params, Xtr, Xdev)
                 pq = ndcg_of_alpha(pred, c["dv_curve"], c["grid"])
                 pm, ps, pc = pred_diag(pred, c["alpha_dev"])
-                key = f"f{nf}|{fam}|{fr}"      # NOT `tag`: that is the fusion tag
+                key = f"f{nf}|{fam}|{fr}"      # `key`, not `tag` (which is the fusion tag)
                 per_q[key] = pq
                 meta[key] = dict(n=nf, cost=cost, std=ps, family=fam, framing=fr,
                                  params=st.best_trial.params, features=fs)
@@ -673,7 +660,7 @@ def sec_rescreen(cfg, paths):
     models = {k: v for k, v in per_q.items() if k not in ("constant", "oracle")}
     top = max(models, key=lambda k: models[k].mean())
     rows = []
-    for key, pq in per_q.items():      # NOT `tag`: that is the fusion tag
+    for key, pq in per_q.items():      # `key`, not `tag` (which is the fusion tag)
         d_, lo, hi = paired_bootstrap(pq, per_q[top], c["n_boot"], c["seed"])
         m = meta[key]
         rows.append(dict(config=key, n_features=m["n"], max_cost=m["cost"],
@@ -706,8 +693,8 @@ def sec_final_fit(cfg, paths):
     art = os.path.join(paths["router_final"], f"{name}_{tag}_router.joblib")
     if os.path.exists(art):
         return f"already frozen: {art}"
-    # Held-out datasets inherit the spec chosen on the DEVELOPMENT dataset, so
-    # no selection whatsoever happens on them (see study.inherit_spec_from).
+    # Held-out datasets inherit the development dataset's spec, so no selection
+    # happens on them (see study.inherit_spec_from).
     src_ds = (cfg.get("study", {}) or {}).get("inherit_spec_from") or name
     spec_p = os.path.join(paths["router_screening"], f"{src_ds}_{tag}_rescreen_best.json")
     if not os.path.exists(spec_p) and src_ds != name:
@@ -783,8 +770,7 @@ def sec_benchmark(cfg, paths):
     R = joblib.load(os.path.join(paths["router_final"], f"{name}_{tag}_router.joblib"))
 
     # Tune the global-alpha baselines on the non-test split (dev if present, else
-    # train -- same split the router's weights/calibration were fit on). scifact
-    # has no dev; test-only datasets never reach here (they cannot fit a router).
+    # train) -- the same split the router's weights and calibration were fit on.
     _, _, tune_split = resolve_splits(paths, name)
     lists = {}
     for s in (tune_split, "test"):
@@ -792,10 +778,8 @@ def sec_benchmark(cfg, paths):
         qr = read_qrels(folder, s)
         lists[s] = (qids, qr, bi, bv, di, dv_)
 
-    # tune every global alpha on the tuning split -- same opportunity the router had
     def tune(fusion, nrm):
-        """Grid-search ONE global alpha. Precomputes each query's fusion arrays
-        once, so the alpha sweep is a vectorised weighted sum."""
+        """Grid-search the best single global alpha on the tuning split."""
         qids, qr, bi, bv, di, dv_ = lists[tune_split]
         pre = []
         for i, q in enumerate(qids):
@@ -814,8 +798,8 @@ def sec_benchmark(cfg, paths):
     a_sc, a_bo, a_rr = tune("score", norm), tune("borda", None), tune("rrf", None)
     print(f"  score a*={a_sc:.2f} | borda a*={a_bo:.2f} | rrf a*={a_rr:.2f}")
 
-    # dtype=str: numeric qids (fever/fiqa/quora) would otherwise be read as int64
-    # and never match the string qids from retrieval, giving an empty feature set.
+    # dtype=str: numeric qids would otherwise be read as int64 and never match
+    # the string qids from retrieval, giving an empty feature set.
     tdf = pd.read_csv(os.path.join(paths["feature_dataset"],
                                    f"{name}_{tag}_test_features.csv"),
                       dtype={"qid": str}).set_index("qid")
@@ -833,10 +817,9 @@ def sec_benchmark(cfg, paths):
     ralpha = dict(zip(keep, raw))
     print(f"  router: {us:.1f} us/query, alpha mean={raw.mean():.3f} std={raw.std():.3f}")
 
-    # The ROUTER, the primary baseline, and the oracle all use THIS cell's fusion
-    # function (the one the router was trained on) -- applying a borda/rrf-trained
-    # router through score fusion, or comparing it to a score baseline, is
-    # meaningless. The other two fusions appear as cross-context static rows.
+    # Router, primary baseline, and oracle all use this cell's fusion (the one
+    # the router was trained on); the other two fusions appear only as static
+    # context rows.
     prim = fu["function"]
     prim_norm = norm if prim == "score" else None
     a_star = {"score": a_sc, "borda": a_bo, "rrf": a_rr}

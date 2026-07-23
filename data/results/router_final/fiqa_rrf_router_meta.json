@@ -1,0 +1,29 @@
+{
+  "dataset": "fiqa",
+  "family": "extra_trees",
+  "framing": "multibin",
+  "params": {
+    "n_estimators": 133,
+    "max_depth": 5,
+    "min_samples_leaf": 4,
+    "max_features": 0.5581634329043031,
+    "use_sample_weight": true,
+    "decision_rule": "calibrated",
+    "n_calib_bins": 10
+  },
+  "features": [
+    "ql",
+    "smv_dense",
+    "d_entropy"
+  ],
+  "n_train": 5500,
+  "dev_ndcg": 0.5332629680633545,
+  "dev_constant": 0.5339578986167908,
+  "dev_oracle": 0.6047347187995911,
+  "gain_vs_constant": -0.000694925372954458,
+  "gain_ci": [
+    -0.004420873604249209,
+    0.0029452306916937223
+  ],
+  "note": "FROZEN; section 9 opens test once."
+}

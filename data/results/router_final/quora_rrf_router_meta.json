@@ -1,0 +1,29 @@
+{
+  "dataset": "quora",
+  "family": "extra_trees",
+  "framing": "multibin",
+  "params": {
+    "n_estimators": 133,
+    "max_depth": 5,
+    "min_samples_leaf": 4,
+    "max_features": 0.5581634329043031,
+    "use_sample_weight": true,
+    "decision_rule": "calibrated",
+    "n_calib_bins": 10
+  },
+  "features": [
+    "ql",
+    "smv_dense",
+    "d_entropy"
+  ],
+  "n_train": 5000,
+  "dev_ndcg": 0.8878816366195679,
+  "dev_constant": 0.8878993988037109,
+  "dev_oracle": 0.9363929629325867,
+  "gain_vs_constant": -1.7884445696836337e-05,
+  "gain_ci": [
+    -0.0023150805849581958,
+    0.002137138397665694
+  ],
+  "note": "FROZEN; section 9 opens test once."
+}

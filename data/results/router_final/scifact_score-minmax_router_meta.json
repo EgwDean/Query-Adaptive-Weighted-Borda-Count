@@ -1,0 +1,29 @@
+{
+  "dataset": "scifact",
+  "family": "logreg",
+  "framing": "multibin",
+  "params": {
+    "penalty": "elasticnet",
+    "C": 1.2555870152029216,
+    "l1_ratio": 0.3794605621813536,
+    "use_sample_weight": true,
+    "scaler": "robust",
+    "decision_rule": "calibrated",
+    "n_calib_bins": 20
+  },
+  "features": [
+    "margin_bm25",
+    "entropy_bm25",
+    "smv_dense"
+  ],
+  "n_train": 809,
+  "dev_ndcg": 0.7436276078224182,
+  "dev_constant": 0.7352623343467712,
+  "dev_oracle": 0.7933120131492615,
+  "gain_vs_constant": 0.008365288376808167,
+  "gain_ci": [
+    -0.0002639017176989,
+    0.01647654864937067
+  ],
+  "note": "FROZEN; section 9 opens test once."
+}

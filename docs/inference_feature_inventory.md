@@ -1,11 +1,10 @@
-# Inference-Time Feature Inventory (Phase 2 dataset plan)
+# Inference-Time Feature Inventory
 
-Which features from [ltr_router_features.md](ltr_router_features.md) can
-actually be computed **at inference time** (query text + retrieval results
-only — no qrels), and how we'd compute each one for the planned Phase-2
-dataset: one row per hotpotqa query, columns = these features, label = oracle
-alpha (from `alpha_distribution.py`). **This is a plan only — no dataset is
-built yet.**
+Which features from [ltr_router_features.md](ltr_router_features.md) can be
+computed **at inference time** (query text + retrieval results only — no qrels),
+and how each is computed. These are the router features built in section 4 of
+the pipeline: one row per query, columns = these features, label = the oracle
+alpha.
 
 **Rule for inclusion:** a feature is *available* if it can be computed from
 (a) the query text, (b) corpus-wide statistics computed once from the corpus
@@ -62,10 +61,9 @@ is a single pass over the query's own (few) tokens.
 
 ## B. Per-retriever post-retrieval features (compute once per list: BM25 and dense)
 
-All of these need only the retrieved top-k **scores** for that query — note
-the current `bm25_retrieve`/`dense_retrieve` in `alpha_distribution.py`
-discard raw scores and keep only ranked doc-id order; the Phase-2 dataset
-build will need to also capture the scores.
+All of these need only the retrieved top-k **scores** for that query. Section 3
+of the pipeline caches the raw BM25 and dense scores (not just ranked doc-id
+order) precisely so these features can be computed in section 4.
 
 | Feature | Available? | How computed |
 |---|---|---|

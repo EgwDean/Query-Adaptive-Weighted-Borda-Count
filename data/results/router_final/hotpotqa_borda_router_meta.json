@@ -1,0 +1,28 @@
+{
+  "dataset": "hotpotqa",
+  "family": "logreg",
+  "framing": "binary",
+  "params": {
+    "penalty": "l2",
+    "C": 0.0009191398638626527,
+    "use_sample_weight": true,
+    "scaler": "standard",
+    "decision_rule": "calibrated",
+    "n_calib_bins": 20
+  },
+  "features": [
+    "ql",
+    "sigma_k_dense",
+    "d_entropy"
+  ],
+  "n_train": 85000,
+  "dev_ndcg": 0.6751442551612854,
+  "dev_constant": 0.6637718081474304,
+  "dev_oracle": 0.7501801252365112,
+  "gain_vs_constant": 0.011372486129403114,
+  "gain_ci": [
+    0.00816379024181515,
+    0.01477972383145243
+  ],
+  "note": "FROZEN; section 9 opens test once."
+}

@@ -1,0 +1,28 @@
+{
+  "dataset": "quora",
+  "family": "logreg",
+  "framing": "binary",
+  "params": {
+    "penalty": "l2",
+    "C": 0.0009191398638626527,
+    "use_sample_weight": true,
+    "scaler": "standard",
+    "decision_rule": "calibrated",
+    "n_calib_bins": 20
+  },
+  "features": [
+    "ql",
+    "sigma_k_dense",
+    "d_entropy"
+  ],
+  "n_train": 5000,
+  "dev_ndcg": 0.8835539817810059,
+  "dev_constant": 0.8842825889587402,
+  "dev_oracle": 0.9374963045120239,
+  "gain_vs_constant": -0.000728640123270452,
+  "gain_ci": [
+    -0.0036765270808245985,
+    0.002330993360374122
+  ],
+  "note": "FROZEN; section 9 opens test once."
+}

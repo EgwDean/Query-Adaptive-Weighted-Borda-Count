@@ -1,0 +1,29 @@
+{
+  "dataset": "nfcorpus",
+  "family": "logreg",
+  "framing": "multibin",
+  "params": {
+    "penalty": "elasticnet",
+    "C": 1.2555870152029216,
+    "l1_ratio": 0.3794605621813536,
+    "use_sample_weight": true,
+    "scaler": "robust",
+    "decision_rule": "calibrated",
+    "n_calib_bins": 20
+  },
+  "features": [
+    "margin_bm25",
+    "entropy_bm25",
+    "smv_dense"
+  ],
+  "n_train": 2590,
+  "dev_ndcg": 0.34718817472457886,
+  "dev_constant": 0.3501332998275757,
+  "dev_oracle": 0.3996044099330902,
+  "gain_vs_constant": -0.0029451448936015368,
+  "gain_ci": [
+    -0.008424745011143386,
+    0.0027657270140480244
+  ],
+  "note": "FROZEN; section 9 opens test once."
+}

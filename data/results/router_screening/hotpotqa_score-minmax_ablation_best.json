@@ -1,0 +1,10 @@
+{
+  "n_features": 3,
+  "dev_ndcg": 0.6962177753448486,
+  "features": [
+    "margin_bm25",
+    "entropy_bm25",
+    "smv_dense"
+  ],
+  "full_ndcg": 0.6953386068344116
+}

@@ -1,0 +1,12 @@
+{
+  "n_features": 5,
+  "dev_ndcg": 0.676429271697998,
+  "features": [
+    "ql",
+    "query_centroid_cos",
+    "sigma_k_dense",
+    "margin_dense",
+    "d_entropy"
+  ],
+  "full_ndcg": 0.6737194657325745
+}

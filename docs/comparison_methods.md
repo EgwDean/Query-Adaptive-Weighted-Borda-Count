@@ -5,7 +5,7 @@
 > standard baselines only — that score fusion beats them is settled in the
 > literature (Bruch et al., TOIS 2023), not a contribution here.
 
-Reference for the Phase-2 evaluation of **Query-Adaptive Weighted Borda Count**.
+Reference for the evaluation baselines used in this study.
 
 **Golden rule:** every fusion method consumes the **same inputs** — the same
 tuned BM25 top-k and the same all-mpnet-base-v2 dense top-k — so any difference

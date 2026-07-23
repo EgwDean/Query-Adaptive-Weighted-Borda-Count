@@ -1,0 +1,29 @@
+{
+  "dataset": "quora",
+  "family": "logreg",
+  "framing": "multibin",
+  "params": {
+    "penalty": "elasticnet",
+    "C": 1.2555870152029216,
+    "l1_ratio": 0.3794605621813536,
+    "use_sample_weight": true,
+    "scaler": "robust",
+    "decision_rule": "calibrated",
+    "n_calib_bins": 20
+  },
+  "features": [
+    "margin_bm25",
+    "entropy_bm25",
+    "smv_dense"
+  ],
+  "n_train": 5000,
+  "dev_ndcg": 0.9015828371047974,
+  "dev_constant": 0.9010931849479675,
+  "dev_oracle": 0.9356048703193665,
+  "gain_vs_constant": 0.0004896746249869466,
+  "gain_ci": [
+    -0.0010974253847962246,
+    0.0020327084581367666
+  ],
+  "note": "FROZEN; section 9 opens test once."
+}

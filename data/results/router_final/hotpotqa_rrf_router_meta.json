@@ -1,0 +1,29 @@
+{
+  "dataset": "hotpotqa",
+  "family": "extra_trees",
+  "framing": "multibin",
+  "params": {
+    "n_estimators": 133,
+    "max_depth": 5,
+    "min_samples_leaf": 4,
+    "max_features": 0.5581634329043031,
+    "use_sample_weight": true,
+    "decision_rule": "calibrated",
+    "n_calib_bins": 10
+  },
+  "features": [
+    "ql",
+    "smv_dense",
+    "d_entropy"
+  ],
+  "n_train": 85000,
+  "dev_ndcg": 0.681995153427124,
+  "dev_constant": 0.6692682504653931,
+  "dev_oracle": 0.7406662702560425,
+  "gain_vs_constant": 0.012726908549666405,
+  "gain_ci": [
+    0.00987698626704514,
+    0.01544846654869616
+  ],
+  "note": "FROZEN; section 9 opens test once."
+}
