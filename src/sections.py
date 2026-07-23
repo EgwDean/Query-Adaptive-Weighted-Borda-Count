@@ -227,6 +227,26 @@ def load_split(paths, name, split, tag):
             np.load(os.path.join(fd, f"{name}_{tag}_{split}_curve.npy")))
 
 
+def load_fit_eval(paths, name, fit_split, sel_split, tag, seed=42, frac=0.5):
+    """Fit and evaluation frames for router experiments.
+
+    scifact (no dev) and quora (no train) have only two splits, so resolve_splits
+    falls back to sel == fit and the router would be scored on the very queries it
+    was fitted on -- which flatters a raw-output rule far more than a binned one.
+    Carve a deterministic disjoint slice instead. Returns a `carved` flag so
+    callers can record that the evaluation split was derived, not native.
+    """
+    tr, trc = load_split(paths, name, fit_split, tag)
+    if fit_split != sel_split:
+        dv, dvc = load_split(paths, name, sel_split, tag)
+        return tr, trc, dv, dvc, False
+    perm = np.random.default_rng(seed).permutation(len(tr))
+    cut = int(round(frac * len(tr)))
+    fi, ei = np.sort(perm[:cut]), np.sort(perm[cut:])
+    return (tr.iloc[fi].reset_index(drop=True), trc[fi],
+            tr.iloc[ei].reset_index(drop=True), trc[ei], True)
+
+
 def ndcg_of_alpha(pred, curve, grid):
     p = np.clip(np.asarray(pred, dtype=np.float64), 0.0, 1.0)
     idx = np.abs(grid[None, :] - p[:, None]).argmin(axis=1)
@@ -416,14 +436,17 @@ def _router_ctx(cfg, paths, feats=None):
     grid = np.load(os.path.join(paths["feature_dataset"],
                                 f"{name}_{tag}_alpha_grid.npy")).astype(np.float64)
     _, fit_s, sel_s = resolve_splits(paths, name)
-    tr, trc = load_split(paths, name, fit_s, tag)
-    dv, dvc = load_split(paths, name, sel_s, tag)
+    tr, trc, dv, dvc, carved = load_fit_eval(paths, name, fit_s, sel_s, tag, seed)
+    if carved:
+        print(f"  {name}: only one non-test split ({fit_s}); carved a disjoint "
+              f"{len(tr)}/{len(dv)} fit/eval slice")
     allf = [c for c in tr.columns if c not in NON_FEATURE]
     feats = feats or allf
     n = min(int(r["train_subset"]), len(tr))
     sub = np.random.default_rng(seed).choice(len(tr), size=n, replace=False)
     bins = np.linspace(0, 1, int(r["n_bins"]))
-    return dict(name=name, tag=tag, seed=seed, fit_split=fit_s, sel_split=sel_s, grid=grid, bins=bins, allf=allf, feats=feats,
+    return dict(name=name, tag=tag, seed=seed, fit_split=fit_s, sel_split=sel_s,
+                carved=carved, grid=grid, bins=bins, allf=allf, feats=feats,
                 Xtr=tr.iloc[sub][feats].to_numpy(float),
                 alpha_tr=tr.iloc[sub]["alpha"].to_numpy(float),
                 wtr=tr.iloc[sub]["alpha_sensitivity"].to_numpy(float),
@@ -741,6 +764,10 @@ def sec_final_fit(cfg, paths):
                        dev_constant=float(dvc[:, a].mean()),
                        dev_oracle=float(dvc.max(1).mean()),
                        gain_vs_constant=d_, gain_ci=[lo, hi],
+                       # With only two splits the model is fitted on all of the
+                       # fit split, so this dev figure is in-sample and optimistic.
+                       # The section-9 test evaluation is unaffected.
+                       dev_in_sample=bool(c["fit_split"] == c["sel_split"]),
                        note="FROZEN; section 9 opens test once."), f, indent=2)
     return (f"dev {pq.mean():.4f} vs constant {dvc[:,a].mean():.4f} "
             f"({d_:+.4f} CI [{lo:+.4f},{hi:+.4f}]) -> frozen")
