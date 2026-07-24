@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN
+from pptx.enum.text import PP_ALIGN, MSO_ANCHOR, MSO_AUTO_SIZE
 
 from utils import repo_root, load_config, get_paths
 
@@ -122,18 +122,20 @@ class Deck:
         first = True
         for it in items:
             lvl, text = it[0], it[1]
-            style = it[2] if len(it) > 2 else ""
+            # style flags are whitespace-separated tokens, matched exactly:
+            # substring matching would make "muted" trigger the "m" (mono) flag.
+            toks = set(" ".join(str(x) for x in it[2:]).replace(",", " ").split())
             p = tf.paragraphs[0] if first else tf.add_paragraph()
             first = False
             p.level = min(lvl, 4)
             p.space_after = Pt(6 if lvl else 9)
             r = p.add_run(); r.text = text
             r.font.size = Pt(size - 2 * lvl)
-            r.font.bold = "b" in style
-            r.font.italic = "i" in style
-            r.font.name = "Consolas" if "m" in style else "Calibri"
-            r.font.color.rgb = (POS if "pos" in style else NEG if "neg" in style
-                                else GREY if "muted" in style else INK)
+            r.font.bold = bool(toks & {"b", "mb"})
+            r.font.italic = "i" in toks
+            r.font.name = "Consolas" if toks & {"m", "mb"} else "Calibri"
+            r.font.color.rgb = (POS if "pos" in toks else NEG if "neg" in toks
+                                else GREY if "muted" in toks else INK)
         return tb
 
     # ---------- slide kinds ----------
@@ -173,24 +175,46 @@ class Deck:
         self._body(s, items, size=size)
         self.note(s, note); return s
 
-    def math(self, title, formula_lines, items=None, note="", fsize=16):
-        """A boxed monospace formula block, optionally followed by bullets."""
+    def math(self, title, formula_lines, items=None, note="", fsize=None):
+        """A boxed monospace formula block, optionally followed by bullets.
+
+        The background is a plain rectangle and the text lives in a separate
+        textbox on top: autoshape text frames centre their content, which would
+        destroy the alignment of stacked fractions.
+        """
         s = self._s(); self._band(s); self._title(s, title)
-        h = 0.42 * len(formula_lines) + 0.45
+        lines = list(formula_lines)
+        # size to fit the widest line so nothing wraps or gets auto-shrunk
+        width = max((len(l) for l in lines), default=0)
+        if fsize is None:
+            fsize = 16 if width <= 62 else 14 if width <= 76 else 12 if width <= 92 else 10.5
+        lh = fsize / 58.0                       # inches per line at this size
+        h = lh * len(lines) + 0.42
         box = s.shapes.add_shape(1, Inches(0.7), Inches(1.35), Inches(11.9), Inches(h))
         box.fill.solid(); box.fill.fore_color.rgb = CODEBG
         box.line.color.rgb = RGBColor(0xC5, 0xD0, 0xDE)
-        tf = box.text_frame; tf.word_wrap = True
-        tf.margin_left = Inches(0.25); tf.margin_top = Inches(0.14)
+        box.shadow.inherit = False
+
+        tb = s.shapes.add_textbox(Inches(0.95), Inches(1.35 + 0.16),
+                                  Inches(11.4), Inches(h - 0.3))
+        tf = tb.text_frame
+        tf.word_wrap = False
+        tf.auto_size = MSO_AUTO_SIZE.NONE
+        tf.vertical_anchor = MSO_ANCHOR.TOP
+        tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = 0
         first = True
-        for ln in formula_lines:
+        for ln in lines:
             p = tf.paragraphs[0] if first else tf.add_paragraph()
             first = False
-            r = p.add_run(); r.text = ln
+            p.alignment = PP_ALIGN.LEFT
+            p.space_before = Pt(0)
+            p.space_after = Pt(0)
+            p.line_spacing = 1.0
+            r = p.add_run(); r.text = ln if ln else " "
             r.font.size = Pt(fsize); r.font.name = "Consolas"
             r.font.color.rgb = INK
         if items:
-            self._body(s, items, top=1.35 + h + 0.25, height=5.4 - h, size=16)
+            self._body(s, items, top=1.35 + h + 0.25, height=6.9 - (1.35 + h), size=16)
         self.note(s, note); return s
 
     def table_slide(self, title, header, rows, note="", col_w=None, fontsize=12,
@@ -256,6 +280,29 @@ class Deck:
 
 def sgn(x, n=4):
     return f"{x:+.{n}f}"
+
+
+def frac_row(*parts):
+    """Lay out a formula containing stacked fractions as three monospace lines.
+
+    Each part is either plain text (sits on the middle line) or a
+    (numerator, denominator) tuple. Numerator and denominator are centred over a
+    bar sized to the wider of the two, so the alignment never depends on hand-
+    counted spaces.
+    """
+    top = mid = bot = ""
+    for p in parts:
+        if isinstance(p, tuple):
+            num, den = p
+            w = max(len(num), len(den)) + 2
+            top += num.center(w)
+            mid += "─" * w
+            bot += den.center(w)
+        else:
+            top += " " * len(p)
+            mid += p
+            bot += " " * len(p)
+    return [top.rstrip(), mid.rstrip(), bot.rstrip()]
 
 
 # --------------------------------------------------------------------------- #
@@ -383,9 +430,10 @@ def part2(d):
         (1, "4. Long documents contain more words by chance, so they must be penalised."),
     ], note="Give the four intuitions before showing the formula; the formula is just these written down.")
     d.math("BM25: the formula",
-           ["                            f(t,D) × (k1 + 1)",
-            "BM25(D,Q) = Σ  IDF(t) × ──────────────────────────────",
-            "            t∈Q          f(t,D) + k1 × (1 − b + b×|D|/avgdl)",
+           frac_row("BM25(D,Q) =  Σ  IDF(t) × ",
+                    ("f(t,D) × (k1 + 1)",
+                     "f(t,D) + k1 × (1 − b + b·|D|/avgdl)")) +
+           ["            t∈Q",
             "",
             "f(t,D) = how often term t occurs in document D",
             "|D|    = document length,   avgdl = average document length",
@@ -412,10 +460,8 @@ def part2(d):
         (1, "768 dimensions, max 384 word-pieces per text, vectors L2-normalised."),
     ], note="Emphasise the offline/online split: embedding the corpus is the expensive one-time cost.")
     d.math("Dense scoring: cosine similarity",
-           ["                    u · v",
-            "cos(u, v) = ───────────────────      ∈ [−1, 1]",
-            "                 ‖u‖ × ‖v‖",
-            "",
+           frac_row("cos(u, v) = ", ("u · v", "‖u‖ × ‖v‖"), "        ∈ [−1, 1]") +
+           ["",
             "If all vectors are L2-normalised (‖u‖ = ‖v‖ = 1):",
             "",
             "cos(u, v) = u · v        a plain dot product"],
@@ -449,10 +495,9 @@ def part3(d):
         (0, "Fix: normalise each retriever's scores per query, onto a common [0, 1] range.", "b", "pos"),
     ], note="This is why normalisation exists. Without it the weight alpha would be meaningless.")
     d.math("Min-max normalisation (applied per query, per retriever)",
-           ["             s − min(s)",
-            "norm(s) = ─────────────────        result ∈ [0, 1]",
-            "           max(s) − min(s)",
-            "",
+           frac_row("norm(s) = ", ("s − min(s)", "max(s) − min(s)"),
+                    "        result ∈ [0, 1]") +
+           ["",
             "best document in the list  → 1.0",
             "worst document in the list → 0.0",
             "if all scores are equal    → 0.0 for everything"],
@@ -483,10 +528,9 @@ def part3(d):
                          (0, "At α = 0.3 the order would flip to D2, D1 — the weight genuinely changes the answer.", "b")],
                   note="Point out the flip: alpha is not cosmetic, it reorders results.")
     d.math("Rank fusion 1: Reciprocal Rank Fusion (RRF)",
-           ["                    1                         1",
-            "RRF(d) = α × ───────────────  +  (1−α) × ───────────────",
-            "              K + rank_b(d)                K + rank_d(d)",
-            "",
+           frac_row("RRF(d) = α × ", ("1", "K + rank_b(d)"),
+                    "  +  (1−α) × ", ("1", "K + rank_d(d)")) +
+           ["",
             "K = 60 (standard constant),  rank is 1-based",
             "a document missing from a list contributes 0 from that side"],
            [(0, "Only the POSITION matters. The score that produced the position is discarded.", "b"),
