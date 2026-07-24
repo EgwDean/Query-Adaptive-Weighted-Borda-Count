@@ -1,0 +1,29 @@
+{
+  "dataset": "msmarco",
+  "family": "logreg",
+  "framing": "binary",
+  "params": {
+    "penalty": "l2",
+    "C": 0.0009191398638626527,
+    "use_sample_weight": true,
+    "scaler": "standard",
+    "decision_rule": "calibrated",
+    "n_calib_bins": 20
+  },
+  "features": [
+    "ql",
+    "sigma_k_dense",
+    "d_entropy"
+  ],
+  "n_train": 40000,
+  "dev_ndcg": 0.39408567547798157,
+  "dev_constant": 0.392607182264328,
+  "dev_oracle": 0.5271767377853394,
+  "gain_vs_constant": 0.001478508929722011,
+  "gain_ci": [
+    0.00042110694412258456,
+    0.0025644399458542464
+  ],
+  "dev_in_sample": true,
+  "note": "FROZEN; section 9 opens test once."
+}
