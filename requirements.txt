@@ -1,9 +1,9 @@
 # ----------------------------------------------------------------------------
-# Query-Adaptive Weighted Borda Count -- Python dependencies
+# Query-Adaptive Score Fusion -- Python dependencies
 #
 # IMPORTANT: install torch FIRST, BEFORE `pip install -r requirements.txt`.
-# Target box (rtx4090): Ubuntu 24.04, Python 3.12, RTX 4090, driver 595 -> use
-# the cu121 wheel (see commands.txt):
+# Reference machine: Ubuntu 24.04, Python 3.12, RTX 4090, driver 595 -> use
+# the cu121 wheel (see docs/REPRODUCING.md):
 #     pip install torch==2.3.1 --index-url https://download.pytorch.org/whl/cu121
 # The `torch==2.3.1` line below is satisfied by the 2.3.1+cu121 wheel, so this
 # file will not overwrite it. Tested with Python 3.10 - 3.12.
