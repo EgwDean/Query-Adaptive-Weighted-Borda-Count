@@ -28,7 +28,7 @@ from utils import load_config, get_paths
 GREEN, RED, GREY, BLUE, GOLD = "#2e7d32", "#c62828", "#9aa0a6", "#0f4c81", "#c9a227"
 FUSIONS = ["score-minmax", "rrf", "borda"]
 FLABEL = {"score-minmax": "score fusion", "rrf": "RRF", "borda": "Borda"}
-DS_ORDER = ["hotpotqa", "fever", "nfcorpus", "scifact", "fiqa", "quora"]
+DS_ORDER = ["hotpotqa", "fever", "nfcorpus", "scifact", "msmarco", "fiqa", "quora"]
 
 
 def point_color(row):
